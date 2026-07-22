@@ -1,0 +1,6 @@
+[project]
+name = "scripts"
+version = "0.1.0"
+description = "Claude Code usage tracker hook scripts"
+requires-python = ">=3.14"
+dependencies = []

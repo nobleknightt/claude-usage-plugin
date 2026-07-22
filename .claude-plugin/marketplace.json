@@ -1,0 +1,13 @@
+{
+  "name": "claude-usage",
+  "owner": {
+    "name": "Ajay Dandge"
+  },
+  "plugins": [
+    {
+      "name": "claude-usage",
+      "source": "./plugin",
+      "description": "Tracks per-user token usage, cost, and sessions for Claude Code, with support for teams sharing a single Claude account."
+    }
+  ]
+}

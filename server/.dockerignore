@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[oc]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Node / bun (client deps + prior builds are rebuilt in-image)
+app/client/node_modules/
+app/client/dist/
+app/client/dist-ssr/
+
+# Secrets & runtime data
+.env
+app/client/.env
+*.db
+*.log
+logs/
+
+# Docker / VCS
+Dockerfile
+compose.yaml
+.dockerignore
+.git/
+.gitignore
