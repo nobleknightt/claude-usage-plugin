@@ -53,27 +53,38 @@ if settings.auth_configured:
 router = APIRouter(prefix="/api")
 
 
-def _upsert_user(email: str) -> dict:
-    """Insert the user if new and refresh their admin flag from the allowlist.
+def _upsert_user(email: str, name: str = "") -> dict:
+    """Insert the user if new, refresh their display name, then return them.
+
+    Email is the user's identity; name is the Entra display-name claim (kept in
+    sync on each login). Admin is a stored per-user flag: new users default to
+    non-admin, and an existing user's flag is left untouched (grant it with
+    scripts/set_admin.py).
 
     Args:
         email: The Entra-verified email address identifying the user.
+        name: The user's display name from the Entra ``name`` claim.
 
     Returns:
-        The user as a dict with ``id``, ``email``, and ``is_admin`` keys.
+        The user as a dict with ``id``, ``email``, ``name``, and ``is_admin``.
     """
-    is_admin = 1 if settings.is_admin(email) else 0
     with get_db() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users (email, is_admin, created_at) VALUES (?, ?, ?)",
-            (email, is_admin, now()),
+            "INSERT OR IGNORE INTO users (email, name, is_admin, created_at) VALUES (?, ?, 0, ?)",
+            (email, name, now()),
         )
-        conn.execute("UPDATE users SET is_admin = ? WHERE email = ?", (is_admin, email))
+        if name:
+            conn.execute("UPDATE users SET name = ? WHERE email = ?", (name, email))
         conn.commit()
         row = conn.execute(
-            "SELECT id, email, is_admin FROM users WHERE email = ?", (email,)
+            "SELECT id, email, name, is_admin FROM users WHERE email = ?", (email,)
         ).fetchone()
-    return {"id": row["id"], "email": row["email"], "is_admin": bool(row["is_admin"])}
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "name": row["name"],
+        "is_admin": bool(row["is_admin"]),
+    }
 
 
 def _mint_token(user: dict) -> str:
@@ -89,6 +100,7 @@ def _mint_token(user: dict) -> str:
     claims = {
         "sub": str(user["id"]),
         "email": user["email"],
+        "name": user.get("name", ""),
         "is_admin": user["is_admin"],
         "iat": issued,
         "exp": issued + JWT_TTL_SECONDS,
@@ -122,6 +134,7 @@ def current_user(request: Request) -> dict:
     return {
         "id": int(claims["sub"]),
         "email": claims["email"],
+        "name": claims.get("name", ""),
         "is_admin": bool(claims["is_admin"]),
     }
 
@@ -153,15 +166,16 @@ async def callback(request: Request):
     if not email:
         raise HTTPException(status_code=401, detail="no email claim in token")
 
-    request.session["token"] = _mint_token(_upsert_user(email))
+    name = (claims.get("name") or "").strip()
+    request.session["token"] = _mint_token(_upsert_user(email, name))
     return RedirectResponse(url=settings.frontend_url)
 
 
-@router.get("/auth/dev-login", summary="Local dev login (no Entra)")
+@router.get("/auth/login", summary="Log in without Entra ID (development only)")
 async def dev_login(request: Request, email: str = "dev@local"):
     """Log in as ``email`` without Entra, for local development only.
 
-    Guarded by the ``DEV_LOGIN`` env flag; returns 404 when disabled so it is
+    Enabled only when ``ENVIRONMENT=development``; returns 404 otherwise so it is
     invisible in production.
 
     Args:
@@ -172,9 +186,9 @@ async def dev_login(request: Request, email: str = "dev@local"):
         A redirect to the frontend once the session is set.
 
     Raises:
-        HTTPException: 404 when ``DEV_LOGIN`` is not enabled.
+        HTTPException: 404 when not running in development.
     """
-    if not settings.dev_login:
+    if not settings.is_development:
         raise HTTPException(status_code=404, detail="not found")
     request.session["token"] = _mint_token(_upsert_user(email.strip().lower()))
     return RedirectResponse(url=settings.frontend_url)

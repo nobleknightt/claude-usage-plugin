@@ -6,6 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL ?? ""
 export type Me = {
   id: number
   email: string
+  name: string
   is_admin: boolean
 }
 
@@ -42,7 +43,7 @@ export type SessionRow = {
   email: string
   account_email: string
   session_id: string
-  project: string
+  cwd: string
   model: string
   started_at: string
   last_turn_at: string
@@ -51,6 +52,12 @@ export type SessionRow = {
   output_tokens: number
   cache_read: number
   cache_write: number
+  cost_usd: number
+}
+
+export type DailyPoint = {
+  date: string
+  tokens: number
   cost_usd: number
 }
 
@@ -68,6 +75,10 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/** Fired whenever any request returns 401 (e.g. the session token expired), so
+ *  the app shell can send the user back to the login screen. */
+export const AUTH_EXPIRED_EVENT = "auth:unauthorized"
+
 function buildQuery(params: Record<string, string | undefined>): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
@@ -81,7 +92,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // `credentials: "include"` sends the session cookie so the server can
   // identify the logged-in user across requests.
   const res = await fetch(`${API_URL}${path}`, { credentials: "include", ...init })
-  if (res.status === 401) throw new UnauthorizedError()
+  if (res.status === 401) {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+    throw new UnauthorizedError()
+  }
   if (!res.ok) {
     throw new Error(`${path} failed: ${res.status} ${res.statusText}`)
   }
@@ -125,8 +139,10 @@ export function revokeKey(id: number): Promise<void> {
 
 // --- usage -----------------------------------------------------------------
 
-export function fetchSummary(range: DateRange = {}): Promise<UserSummary[]> {
-  return request<UserSummary[]>(`/api/summary${buildQuery(range)}`)
+export function fetchSummary(
+  params: DateRange & { email?: string } = {}
+): Promise<UserSummary[]> {
+  return request<UserSummary[]>(`/api/summary${buildQuery(params)}`)
 }
 
 export function fetchSessions(
@@ -136,4 +152,10 @@ export function fetchSessions(
   return request<SessionRow[]>(
     `/api/sessions${buildQuery({ ...rest, limit: limit?.toString() })}`
   )
+}
+
+export function fetchDaily(
+  params: DateRange & { email?: string } = {}
+): Promise<DailyPoint[]> {
+  return request<DailyPoint[]>(`/api/usage/daily${buildQuery(params)}`)
 }

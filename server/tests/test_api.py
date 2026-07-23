@@ -82,7 +82,7 @@ class ApiTestCase(unittest.TestCase):
         )
 
     def test_key_lifecycle_and_revocation(self) -> None:
-        alice = auth._upsert_user("alice@org.com")
+        alice = auth._upsert_user("alice@example.com")
         key = self.make_key(alice, label="laptop")
 
         listed = self.client.get("/api/keys").json()
@@ -106,7 +106,7 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/keys/{key_id}").status_code, 404)
 
     def test_batch_is_idempotent_on_event_id(self) -> None:
-        alice = auth._upsert_user("alice@org.com")
+        alice = auth._upsert_user("alice@example.com")
         key = self.make_key(alice)
         hdr = {"Authorization": f"Bearer {key}"}
         body = self.batch("dup-1", "acct@x", input_tokens=100, cost_usd=0.1)
@@ -121,8 +121,25 @@ class ApiTestCase(unittest.TestCase):
         summary = self.client.get("/api/summary").json()
         self.assertEqual(summary[0]["input_tokens"], 100)
 
+    def test_usage_daily_groups_by_day(self) -> None:
+        alice = auth._upsert_user("alice@example.com")
+        key = self.make_key(alice)
+        hdr = {"Authorization": f"Bearer {key}"}
+        # two events on the same day, different sessions
+        self.client.post("/api/events/batch", headers=hdr, json={"events": [
+            {"event_id": "d1", "payload": {"session_id": "s1", "timestamp": "2026-07-01T09:00:00+00:00", "input_tokens": 100, "output_tokens": 50}},
+            {"event_id": "d2", "payload": {"session_id": "s2", "timestamp": "2026-07-01T15:00:00+00:00", "input_tokens": 200, "output_tokens": 20}},
+        ]})
+
+        self.login(alice)
+        daily = self.client.get("/api/usage/daily").json()
+        self.assertEqual(len(daily), 1)
+        self.assertEqual(daily[0]["date"], "2026-07-01")
+        # (100+50) + (200+20) = 370
+        self.assertEqual(daily[0]["tokens"], 370)
+
     def test_identity_comes_from_the_key_not_the_payload(self) -> None:
-        alice = auth._upsert_user("alice@org.com")
+        alice = auth._upsert_user("alice@example.com")
         key = self.make_key(alice)
         hdr = {"Authorization": f"Bearer {key}"}
         # payload tries to claim a different email; it must be ignored
@@ -131,40 +148,50 @@ class ApiTestCase(unittest.TestCase):
 
         self.login(alice)
         rows = self.client.get("/api/summary").json()
-        self.assertEqual([r["email"] for r in rows], ["alice@org.com"])
+        self.assertEqual([r["email"] for r in rows], ["alice@example.com"])
 
-    def test_member_visibility_covers_shared_account_co_users(self) -> None:
-        alice = auth._upsert_user("alice@org.com")
-        bob = auth._upsert_user("bob@org.com")
-        carol = auth._upsert_user("carol@org.com")
+    def test_account_owner_sees_all_usage_on_their_account(self) -> None:
+        # The Claude account is owned by team@example.com; alice and bob borrow it.
+        owner = auth._upsert_user("team@example.com")
+        alice = auth._upsert_user("alice@example.com")
+        bob = auth._upsert_user("bob@example.com")
 
-        # alice + bob share account "acme"; carol is on "other"
-        for user, acct, eid in ((alice, "acme@shared", "a1"), (bob, "acme@shared", "b1"), (carol, "other@shared", "c1")):
+        for user, eid in ((alice, "a1"), (bob, "b1")):
             key = self.make_key(user)
             self.client.post(
                 "/api/events/batch",
                 headers={"Authorization": f"Bearer {key}"},
-                json=self.batch(eid, acct, input_tokens=10),
+                json=self.batch(eid, "team@example.com", input_tokens=10),
             )
 
-        # alice (member) sees herself + bob, but not carol
-        self.login(alice)
+        # the owner (login email == account_email) sees everyone on the account
+        self.login(owner)
         self.assertEqual(
             sorted(r["email"] for r in self.client.get("/api/summary").json()),
-            ["alice@org.com", "bob@org.com"],
+            ["alice@example.com", "bob@example.com"],
         )
-        # carol sees only herself
-        self.login(carol)
+        # a borrower (non-owner) sees only their own usage
+        self.login(alice)
         self.assertEqual(
             [r["email"] for r in self.client.get("/api/summary").json()],
-            ["carol@org.com"],
+            ["alice@example.com"],
         )
         # an admin sees everyone
         self.login(alice, is_admin=True)
         self.assertEqual(
             sorted(r["email"] for r in self.client.get("/api/summary").json()),
-            ["alice@org.com", "bob@org.com", "carol@org.com"],
+            ["alice@example.com", "bob@example.com"],
         )
+
+        # the owner can filter to a specific co-user on their account
+        self.login(owner)
+        self.assertEqual(
+            [r["email"] for r in self.client.get("/api/summary?email=bob@example.com").json()],
+            ["bob@example.com"],
+        )
+        # but filtering to a user outside the scope returns nothing
+        self.login(alice)  # borrower
+        self.assertEqual(self.client.get("/api/summary?email=bob@example.com").json(), [])
 
 
 if __name__ == "__main__":

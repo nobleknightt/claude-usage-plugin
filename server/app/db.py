@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS usage (
     email         TEXT    NOT NULL,
     account_email TEXT    DEFAULT '',
     session_id    TEXT    NOT NULL,
-    project       TEXT    DEFAULT '',
+    cwd           TEXT    DEFAULT '',
     timestamp     TEXT    NOT NULL,
     model         TEXT    DEFAULT '',
     input_tokens  INTEGER DEFAULT 0,
@@ -38,6 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON usage(timestamp);
 CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     email      TEXT    NOT NULL UNIQUE,
+    name       TEXT    NOT NULL DEFAULT '',
     is_admin   INTEGER NOT NULL DEFAULT 0,
     created_at TEXT    NOT NULL
 );

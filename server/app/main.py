@@ -66,7 +66,7 @@ app.add_middleware(
 class UsageEvent(BaseModel):
     account_email: str   = ""
     session_id:    str
-    project:       str   = ""
+    cwd:           str   = ""
     timestamp:     str   = ""
     model:         str   = ""
     input_tokens:  int   = 0
@@ -100,7 +100,7 @@ def _insert_usage(conn, email: str, p: dict) -> None:
     conn.execute(
         """
         INSERT INTO usage
-            (email, account_email, session_id, project, timestamp, model,
+            (email, account_email, session_id, cwd, timestamp, model,
              input_tokens, output_tokens, cache_read, cache_write, cost_usd)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """,
@@ -108,8 +108,7 @@ def _insert_usage(conn, email: str, p: dict) -> None:
             email,
             p.get("account_email", ""),
             p.get("session_id", ""),
-            # the new hook sends `cwd`; older payloads used `project`
-            p.get("cwd") or p.get("project", ""),
+            p.get("cwd", ""),
             p.get("timestamp") or now(),
             p.get("model", ""),
             p.get("input_tokens", 0),
@@ -174,27 +173,33 @@ def record_usage(event: UsageEvent, user: dict = Depends(require_api_key)) -> di
 def _visibility_filter(user: dict, requested: Optional[str]) -> tuple[str, list]:
     """Build the WHERE clause enforcing who can see whose rows.
 
-    Admins see everything (optionally narrowed to a requested email); members
-    see their own rows plus co-users on any shared Claude account they've used
-    (account-transparent visibility, plan §7).
+    - Admin: everything (optionally narrowed to a requested email).
+    - Account owner: their own rows plus everyone whose usage is billed to the
+      Claude account they own. Ownership means the logged-in email equals the
+      ``account_email`` (which is the Claude account's own address).
+    - Everyone else (co-users borrowing someone else's account): only their own.
+
+    A ``requested`` email narrows the result to that user, but always *within*
+    the caller's allowed scope — so an account owner can filter to a co-user on
+    their account, but not to someone outside it.
 
     Args:
         user: The logged-in dashboard user.
-        requested: An optional email filter (honored for admins only).
+        requested: An optional email to narrow to (constrained to the scope).
 
     Returns:
         A ``(clause, params)`` pair; ``clause`` is empty when no filter applies.
     """
-    if user["is_admin"]:
-        if requested:
-            return "email = ?", [requested]
-        return "", []
-    return (
-        "(email = ? OR account_email IN "
-        "(SELECT DISTINCT account_email FROM usage "
-        " WHERE email = ? AND account_email <> ''))",
-        [user["email"], user["email"]],
-    )
+    conditions: list[str] = []
+    params: list = []
+    if not user["is_admin"]:
+        # own usage OR usage billed to the account this user owns
+        conditions.append("(email = ? OR account_email = ?)")
+        params += [user["email"], user["email"]]
+    if requested:
+        conditions.append("email = ?")
+        params.append(requested)
+    return " AND ".join(conditions), params
 
 
 @router.get("/summary", summary="Per-user aggregated totals")
@@ -282,7 +287,7 @@ def sessions(
         limit: Maximum number of sessions to return.
 
     Returns:
-        One dict per session with its project, model, timing, token totals,
+        One dict per session with its cwd, model, timing, token totals,
         and cost.
     """
     conditions, params = _date_filter_parts(from_date, to_date)
@@ -292,7 +297,7 @@ def sessions(
         params += vis_params
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     with get_db() as conn:
-        # project/model can change between turns of the same session (cd,
+        # cwd/model can change between turns of the same session (cd,
         # model switch), so a bare column under GROUP BY session_id would
         # return an arbitrary row's value, not necessarily the latest one.
         # Pull those two from the most recent row per session explicitly.
@@ -302,9 +307,9 @@ def sessions(
                 email,
                 account_email,
                 session_id,
-                (SELECT project FROM usage u2
+                (SELECT cwd FROM usage u2
                  WHERE u2.session_id = usage.session_id
-                 ORDER BY timestamp DESC LIMIT 1)  AS project,
+                 ORDER BY timestamp DESC LIMIT 1)  AS cwd,
                 (SELECT model FROM usage u2
                  WHERE u2.session_id = usage.session_id
                  ORDER BY timestamp DESC LIMIT 1)  AS model,
@@ -323,6 +328,60 @@ def sessions(
             LIMIT ?
             """,
             params + [limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.get("/usage/daily", summary="Per-day token totals for the activity heatmap")
+def usage_daily(
+    user:      dict          = Depends(current_user),
+    email:     Optional[str] = Query(None, description="Filter by email (admin only)"),
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date:   Optional[str] = Query(None, alias="to"),
+) -> list[dict]:
+    """Return per-day token totals for the GitHub-style activity heatmap.
+
+    Intensity is input+output tokens (cache excluded so it isn't distorted).
+    Rows are cumulative snapshots, so we take the max per session per day first,
+    then sum across sessions for that day.
+
+    Args:
+        user: The logged-in dashboard user (sets the visibility scope).
+        email: Optional email filter (admins only).
+        from_date: Optional inclusive start date (YYYY-MM-DD).
+        to_date: Optional inclusive end date (YYYY-MM-DD).
+
+    Returns:
+        One dict per active day: ``date`` (YYYY-MM-DD), ``tokens``, ``cost_usd``.
+    """
+    conditions, params = _date_filter_parts(from_date, to_date)
+    vis_clause, vis_params = _visibility_filter(user, email)
+    if vis_clause:
+        conditions.append(vis_clause)
+        params += vis_params
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            WITH per_session_day AS (
+                SELECT
+                    date(timestamp)                        AS day,
+                    session_id,
+                    MAX(input_tokens) + MAX(output_tokens) AS tokens,
+                    MAX(cost_usd)                          AS cost_usd
+                FROM usage
+                {where}
+                GROUP BY date(timestamp), session_id
+            )
+            SELECT
+                day                     AS date,
+                SUM(tokens)             AS tokens,
+                ROUND(SUM(cost_usd), 6) AS cost_usd
+            FROM per_session_day
+            GROUP BY day
+            ORDER BY day
+            """,
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 

@@ -3,8 +3,8 @@ import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Table,
   TableBody,
@@ -56,18 +56,16 @@ export function ApiKeys() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <KeyRound className="size-4" />
-          API keys
-        </CardTitle>
-        <CardDescription>
-          Use a key as the <code>API_KEY</code> when installing the plugin. The secret is shown
-          only once — store it somewhere safe.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+    <div>
+      <h2 className="flex items-center gap-2 font-heading text-lg font-medium">
+        <KeyRound className="size-4" />
+        API keys
+      </h2>
+      <p className="mb-3 text-sm text-muted-foreground">
+        Use a key as the <code>API_KEY</code> when installing the plugin. The secret is shown
+        only once — store it somewhere safe.
+      </p>
+      <div className="flex flex-col gap-4">
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         {newKey && <NewKeyBanner created={newKey} onDismiss={() => setNewKey(null)} />}
@@ -86,6 +84,7 @@ export function ApiKeys() {
           </Button>
         </div>
 
+        <ScrollArea className="w-full rounded-lg border border-border">
         <Table>
           <TableHeader>
             <TableRow>
@@ -136,8 +135,9 @@ export function ApiKeys() {
             )}
           </TableBody>
         </Table>
-      </CardContent>
-    </Card>
+        </ScrollArea>
+      </div>
+    </div>
   )
 }
 

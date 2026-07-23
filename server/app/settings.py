@@ -1,17 +1,26 @@
 """Server configuration, read from environment variables.
 
-Entra (Azure AD) app-registration values, the session-cookie secret, and the
-admin allowlist all live here. See `.env.example` for the full list.
+Entra (Azure AD) app-registration values and the session-cookie secret live
+here. See `.env.example` for the full list. Admin status is not configured here
+— it is a per-user flag stored on the user record (see scripts/set_admin.py).
 """
 
 import os
 import secrets
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Literal
+
+Environment = Literal["development", "production"]
 
 
 def _csv(name: str, default: str = "") -> list[str]:
     return [v.strip() for v in os.environ.get(name, default).split(",") if v.strip()]
+
+
+def _environment() -> Environment:
+    """Read ENVIRONMENT, falling back to production for anything unrecognized."""
+    return "development" if os.environ.get("ENVIRONMENT", "").strip().lower() == "development" else "production"
 
 
 @dataclass(slots=True)
@@ -22,9 +31,17 @@ class Settings:
     redirect_uri: str
     frontend_url: str
     session_secret: str
-    admin_emails: set[str]
     cors_origins: list[str]
-    dev_login: bool
+    environment: Environment
+
+    @property
+    def is_development(self) -> bool:
+        """Whether the server is running in development mode.
+
+        Development-only conveniences (e.g. the dev-login shortcut) are enabled
+        only when this is true. Defaults to production.
+        """
+        return self.environment == "development"
 
     @property
     def auth_configured(self) -> bool:
@@ -47,17 +64,6 @@ class Settings:
             "/v2.0/.well-known/openid-configuration"
         )
 
-    def is_admin(self, email: str) -> bool:
-        """Check whether an email is on the admin allowlist.
-
-        Args:
-            email: The Entra-verified email address to check.
-
-        Returns:
-            True if the email is listed in ``ADMIN_EMAILS``.
-        """
-        return email.strip().lower() in self.admin_emails
-
 
 @lru_cache
 def get_settings() -> Settings:
@@ -77,8 +83,8 @@ def get_settings() -> Settings:
         # A generated fallback keeps dev working, but rotates on restart (all
         # sessions drop). Set SESSION_SECRET in production for stable sessions.
         session_secret=os.environ.get("SESSION_SECRET", "").strip() or secrets.token_hex(32),
-        admin_emails={e.lower() for e in _csv("ADMIN_EMAILS")},
         cors_origins=_csv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8000"),
-        # Local-only shortcut to log in without Entra; never enable in production.
-        dev_login=os.environ.get("DEV_LOGIN", "").strip().lower() in {"1", "true", "yes"},
+        # Defaults to production; set ENVIRONMENT=development to enable dev-only
+        # conveniences such as the /api/auth/login shortcut.
+        environment=_environment(),
     )
