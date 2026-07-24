@@ -60,10 +60,15 @@ uv run --env-file .env fastapi run app/main.py              # http://localhost:8
 **3. Install the plugin:**
 
 ```bash
-claude plugin marketplace add /path/to/claude-usage-plugin
+claude plugin marketplace add nobleknightt/claude-usage-plugin
 claude plugin install claude-usage@claude-usage \
-  --config API_KEY=<your key> --config BASE_URL=http://localhost:8000
+  --config API_KEY=<your key> --config BASE_URL=<your server URL>
 ```
+
+`BASE_URL` is wherever the server runs — `http://localhost:8000` for a local run, or
+your deployed URL (e.g. an ngrok/https address). For local plugin development you can
+add the marketplace from a checkout instead:
+`claude plugin marketplace add /path/to/claude-usage-plugin`.
 
 Use Claude Code as normal — usage shows up on the dashboard.
 
