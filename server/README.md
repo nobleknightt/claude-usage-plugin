@@ -70,6 +70,35 @@ first admin once someone has logged in:
 docker compose exec server python -m scripts.set_admin you@example.com
 ```
 
+## Expose with ngrok (self-hosting without a public domain)
+
+If the machine has no public hostname/TLS, [ngrok](https://ngrok.com) gives you an HTTPS
+URL that satisfies Entra (which requires an HTTPS **hostname** — a bare IP won't do).
+Run ngrok as a container **on the server's compose network** so it reaches the app at
+`server:8000` (the container's internal port — no host port needed):
+
+```bash
+# 1. start the server (creates the claude-usage_default network)
+docker compose up -d --build
+
+# 2. start ngrok, joined to that network, with your reserved domain + authtoken
+docker run -d --name ngrok --restart unless-stopped \
+  --network claude-usage_default \
+  -e NGROK_AUTHTOKEN=<token> \
+  ngrok/ngrok:latest http server:8000 --url=https://<your-domain>.ngrok-free.app
+```
+
+Then:
+- set `ENTRA_REDIRECT_URI=https://<your-domain>.ngrok-free.app/api/auth/microsoft/callback`
+  in `.env` and register that exact URL in Azure;
+- point the plugin at `--config BASE_URL=https://<your-domain>.ngrok-free.app`;
+- verify: `curl https://<your-domain>.ngrok-free.app/api/health`.
+
+Notes: use a **reserved/static domain** so the URL survives restarts (Entra URIs are
+pre-registered); ngrok **free allows one agent session** at a time; and the client
+already sends an `ngrok-skip-browser-warning` header so the dashboard's API calls
+aren't blocked by ngrok's free-tier interstitial.
+
 ## Configuration (`.env`)
 
 | Variable | Purpose |
