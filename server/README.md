@@ -1,8 +1,8 @@
 # Server
 
-FastAPI + SQLite backend and the bundled React dashboard for the Claude Usage
-Tracker. A single process ingests events, serves the query API, and serves the
-built SPA. See the [root README](../README.md) for the big picture.
+FastAPI + SQLite backend and the bundled React dashboard for **Claude Usage**. A
+single process ingests events, serves the query API, and serves the built SPA.
+See the [root README](../README.md) for the big picture.
 
 ## Layout
 
@@ -47,6 +47,29 @@ docker compose up --build
 Builds the dashboard and server image in one shot; the SQLite DB is persisted on the
 `usage-data` volume.
 
+## Deploy server
+
+You only need `server/` — it's self-contained (the Docker build bundles the dashboard;
+nothing from `plugin/` is required).
+
+Copy just this folder with [`degit`](https://github.com/Rich-Harris/degit) (downloads a
+repo subdirectory without git history), run via `bunx`:
+
+```bash
+bunx degit@latest nobleknightt/claude-usage-plugin/server claude-usage-server
+cd claude-usage-server
+cp .env.example .env          # set ENVIRONMENT=production, Entra creds, SESSION_SECRET
+docker compose up -d --build
+```
+
+For production, terminate TLS in front of the container and register
+`https://<host>/api/auth/microsoft/callback` as the Entra **Web** redirect URI. Seed the
+first admin once someone has logged in:
+
+```bash
+docker compose exec server python -m scripts.set_admin you@example.com
+```
+
 ## Configuration (`.env`)
 
 | Variable | Purpose |
@@ -72,8 +95,8 @@ Builds the dashboard and server image in one shot; the SQLite DB is persisted on
   usage on that account), `member` (own only). Admin is a per-user flag:
 
   ```bash
-  uv run python -m scripts.set_admin you@org.com          # grant (creates the user if new)
-  uv run python -m scripts.set_admin you@org.com --revoke # remove
+  uv run python -m scripts.set_admin you@example.com          # grant (creates the user if new)
+  uv run python -m scripts.set_admin you@example.com --revoke # remove
   ```
 
 ## API (summary)

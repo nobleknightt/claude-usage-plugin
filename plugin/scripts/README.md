@@ -1,6 +1,6 @@
 # Hook scripts
 
-The client half of the Claude Usage Tracker plugin. These run as Claude Code
+The client half of the Claude Usage plugin. These run as Claude Code
 hooks and **never block the session** — they parse the turn's transcript, write to
 a local durable queue, and sync to the server in the background. See the
 [root README](../../README.md) for the whole system.
@@ -42,7 +42,7 @@ environment variables:
 | Config | Notes |
 |---|---|
 | `API_KEY` | Sensitive. Generated for you in the dashboard. |
-| `BASE_URL` | The usage tracker server's URL. |
+| `BASE_URL` | The Claude Usage server URL. |
 
 ## Install / local dev
 

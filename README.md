@@ -1,4 +1,4 @@
-# Claude Usage Tracker
+# Claude Usage
 
 Per-user token, cost, and session tracking for Claude Code — built for teams that
 **share a single Claude account**.
@@ -55,7 +55,7 @@ uv run --env-file .env fastapi run app/main.py              # http://localhost:8
 ```
 
 **2. Get an API key** — sign in to the dashboard and create one under **API keys**.
-(First admin: `cd server && uv run python -m scripts.set_admin you@org.com`.)
+(First admin: `cd server && uv run python -m scripts.set_admin you@example.com`.)
 
 **3. Install the plugin:**
 
