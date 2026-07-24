@@ -1,7 +1,7 @@
 {
   "name": "claude-usage",
   "description": "Tracks per-user token usage, cost, and sessions for Claude Code, with support for teams sharing a single Claude account.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Ajay Dandge"
   },
