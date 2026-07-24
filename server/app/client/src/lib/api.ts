@@ -136,9 +136,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // --- auth ------------------------------------------------------------------
 
-/** Absolute URL that starts the Entra login flow (a full-page redirect). */
-export function loginUrl(): string {
-  return `${API_URL}/api/auth/microsoft/login`
+export type AuthProvider = "microsoft" | "google"
+
+export type Providers = {
+  microsoft: boolean
+  google: boolean
+}
+
+/** Absolute URL that starts a provider's login flow (a full-page redirect). */
+export function loginUrl(provider: AuthProvider): string {
+  return `${API_URL}/api/auth/${provider}/login`
+}
+
+/** Which login providers the server has configured, so the UI shows only those. */
+export function fetchProviders(): Promise<Providers> {
+  return request<Providers>("/api/auth/providers")
 }
 
 export function fetchMe(): Promise<Me> {

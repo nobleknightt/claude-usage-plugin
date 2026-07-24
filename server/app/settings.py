@@ -23,12 +23,18 @@ def _environment() -> Environment:
     return "development" if os.environ.get("ENVIRONMENT", "").strip().lower() == "development" else "production"
 
 
+GOOGLE_METADATA_URL = "https://accounts.google.com/.well-known/openid-configuration"
+
+
 @dataclass(slots=True)
 class Settings:
-    tenant_id: str
-    client_id: str
-    client_secret: str
-    redirect_uri: str
+    entra_tenant_id: str
+    entra_client_id: str
+    entra_client_secret: str
+    entra_redirect_uri: str
+    google_client_id: str
+    google_client_secret: str
+    google_redirect_uri: str
     frontend_url: str
     session_secret: str
     cors_origins: list[str]
@@ -44,25 +50,49 @@ class Settings:
         return self.environment == "development"
 
     @property
-    def auth_configured(self) -> bool:
+    def entra_configured(self) -> bool:
         """Whether the Entra app-registration values are all present.
 
         Returns:
             True if tenant, client id, and client secret are set.
         """
-        return bool(self.tenant_id and self.client_id and self.client_secret)
+        return bool(self.entra_tenant_id and self.entra_client_id and self.entra_client_secret)
 
     @property
-    def oidc_metadata_url(self) -> str:
+    def entra_metadata_url(self) -> str:
         """Return the Entra OpenID Connect discovery document URL.
 
         Returns:
             The tenant-specific ``.well-known/openid-configuration`` URL.
         """
         return (
-            f"https://login.microsoftonline.com/{self.tenant_id}"
+            f"https://login.microsoftonline.com/{self.entra_tenant_id}"
             "/v2.0/.well-known/openid-configuration"
         )
+
+    @property
+    def google_configured(self) -> bool:
+        """Whether the Google OAuth client id and secret are both present.
+
+        Returns:
+            True if the Google client id and secret are set.
+        """
+        return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def google_metadata_url(self) -> str:
+        """Return Google's OpenID Connect discovery document URL.
+
+        Unlike Entra's tenant-specific URL, Google's is the same for every app,
+        so this is a fixed value exposed as a property only for call-site
+        symmetry with :attr:`entra_metadata_url`.
+        """
+        return GOOGLE_METADATA_URL
+
+    @property
+    def auth_configured(self) -> bool:
+        """Whether at least one OIDC provider (Entra or Google) is configured."""
+        return self.entra_configured or self.google_configured
 
 
 @lru_cache
@@ -73,11 +103,16 @@ def get_settings() -> Settings:
         The populated :class:`Settings` instance.
     """
     return Settings(
-        tenant_id=os.environ.get("ENTRA_TENANT_ID", "").strip(),
-        client_id=os.environ.get("ENTRA_CLIENT_ID", "").strip(),
-        client_secret=os.environ.get("ENTRA_CLIENT_SECRET", "").strip(),
-        redirect_uri=os.environ.get(
+        entra_tenant_id=os.environ.get("ENTRA_TENANT_ID", "").strip(),
+        entra_client_id=os.environ.get("ENTRA_CLIENT_ID", "").strip(),
+        entra_client_secret=os.environ.get("ENTRA_CLIENT_SECRET", "").strip(),
+        entra_redirect_uri=os.environ.get(
             "ENTRA_REDIRECT_URI", "http://localhost:8000/api/auth/microsoft/callback"
+        ).strip(),
+        google_client_id=os.environ.get("GOOGLE_CLIENT_ID", "").strip(),
+        google_client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", "").strip(),
+        google_redirect_uri=os.environ.get(
+            "GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback"
         ).strip(),
         frontend_url=os.environ.get("FRONTEND_URL", "/").strip(),
         # A generated fallback keeps dev working, but rotates on restart (all

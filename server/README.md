@@ -10,7 +10,7 @@ See the [root README](../README.md) for the big picture.
 server/
 ├── app/
 │   ├── main.py       # routes: ingestion, usage/summary/sessions/daily, health; serves the SPA
-│   ├── auth.py       # Entra ID (OIDC) login, session JWT, current_user dependency
+│   ├── auth.py       # Entra + Google (OIDC) login, session JWT, current_user dependency
 │   ├── keys.py       # API key create/list/revoke + Bearer validation
 │   ├── db.py         # SQLite schema + access
 │   ├── settings.py   # environment configuration
@@ -104,8 +104,10 @@ aren't blocked by ngrok's free-tier interstitial.
 | Variable | Purpose |
 |---|---|
 | `DATABASE` | SQLite path (default `usage.db`; compose uses `/data/usage.db`) |
-| `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` | Azure app registration |
+| `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` | Azure app registration (optional if using Google) |
 | `ENTRA_REDIRECT_URI` | Must match a **Web** redirect URI registered in Azure |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client (optional if using Entra) |
+| `GOOGLE_REDIRECT_URI` | Must match an authorized redirect URI on the Google client |
 | `FRONTEND_URL` | Where the browser lands after login |
 | `SESSION_SECRET` | Signs the session cookie / JWT (set a long random value) |
 | `CORS_ORIGINS` | Comma-separated browser origins allowed with credentials |
@@ -115,9 +117,11 @@ aren't blocked by ngrok's free-tier interstitial.
 
 ## Auth & roles
 
-- **Dashboard login:** Microsoft Entra ID (OIDC). When `ENVIRONMENT=development`, a
-  dev shortcut `GET /api/auth/login?email=<email>` logs in without Entra (404 in
-  production).
+- **Dashboard login:** Microsoft Entra ID and/or Google (OIDC). Configure either or
+  both; the sign-in screen shows a button per configured provider. Users are keyed by
+  email, so the same address works across providers. When `ENVIRONMENT=development`, a
+  dev shortcut `GET /api/auth/login?email=<email>` logs in without a provider; it is
+  disabled in production (the route returns 404).
 - **API keys:** created in the dashboard; the hook sends one as
   `Authorization: Bearer`. Only the SHA-256 hash is stored.
 - **Roles:** `admin` (all), account **owner** (login email == `account_email` → all

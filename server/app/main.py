@@ -40,7 +40,7 @@ logger = logging.getLogger("usage-tracker")
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     init_db()
     if not settings.auth_configured:
-        logger.warning("Entra auth not configured — login endpoints will return 503")
+        logger.warning("No auth provider configured — login endpoints will return 503")
     yield
 
 

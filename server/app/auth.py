@@ -1,10 +1,11 @@
-"""Dashboard authentication via Microsoft Entra ID (OIDC).
+"""Dashboard authentication via OIDC (Microsoft Entra ID and/or Google).
 
-Flow: the SPA sends the browser to `/api/auth/login`, we redirect to Entra, and
-Entra calls back to `/api/auth/callback` with an authorization code. We exchange
-it for an id_token, upsert the user (email from the verified token), and store a
-signed session cookie. `current_user` reads that cookie for dashboard endpoints;
-API-key auth for the hook lives in `keys.py`.
+Flow: the SPA sends the browser to `/api/auth/<provider>/login`, we redirect to
+the provider, and it calls back to `/api/auth/<provider>/callback` with an
+authorization code. We exchange it for an id_token, upsert the user (email from
+the verified token), and store a signed session cookie. Users are keyed by
+email, so the same address works across providers. `current_user` reads that
+cookie for dashboard endpoints; API-key auth for the hook lives in `keys.py`.
 """
 
 import logging
@@ -41,12 +42,20 @@ def _jwt_key() -> OctKey:
     return OctKey.import_key(settings.session_secret)
 
 oauth = OAuth()
-if settings.auth_configured:
+if settings.entra_configured:
     oauth.register(
         name="entra",
-        server_metadata_url=settings.oidc_metadata_url,
-        client_id=settings.client_id,
-        client_secret=settings.client_secret,
+        server_metadata_url=settings.entra_metadata_url,
+        client_id=settings.entra_client_id,
+        client_secret=settings.entra_client_secret,
+        client_kwargs={"scope": "openid email profile"},
+    )
+if settings.google_configured:
+    oauth.register(
+        name="google",
+        server_metadata_url=settings.google_metadata_url,
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
         client_kwargs={"scope": "openid email profile"},
     )
 
@@ -139,24 +148,27 @@ def current_user(request: Request) -> dict:
     }
 
 
-@router.get("/auth/microsoft/login", summary="Start the Entra login flow")
-async def login(request: Request):
-    if not settings.auth_configured:
-        raise HTTPException(status_code=503, detail="authentication is not configured")
-    return await oauth.entra.authorize_redirect(request, settings.redirect_uri)
+def _complete_login(request: Request, claims: dict, verify_email: bool = False):
+    """Turn verified OIDC claims into a session and redirect to the dashboard.
 
+    Shared by every provider: identity is the verified email (users are keyed by
+    it, so signing in with either provider under the same address lands on the
+    same account), and only ``email`` + ``name`` are kept — the common fields
+    both providers return.
 
-@router.get("/auth/microsoft/callback", summary="Entra OIDC redirect target")
-async def callback(request: Request):
-    if not settings.auth_configured:
-        raise HTTPException(status_code=503, detail="authentication is not configured")
-    try:
-        token = await oauth.entra.authorize_access_token(request)
-    except OAuthError as e:
-        logger.warning("callback: OAuth error: %s", e)
-        raise HTTPException(status_code=401, detail="login failed") from e
+    Args:
+        request: The request whose session will carry the minted token.
+        claims: The provider's ``userinfo`` claims.
+        verify_email: If true, reject a claim whose ``email_verified`` is false
+            (Google can assert an unverified address; Entra tenant emails are
+            trusted).
 
-    claims = token.get("userinfo") or {}
+    Returns:
+        A redirect to the configured frontend URL.
+
+    Raises:
+        HTTPException: 401 if there is no email claim, or it is unverified.
+    """
     email = (
         claims.get("email")
         or claims.get("preferred_username")
@@ -165,10 +177,56 @@ async def callback(request: Request):
     ).strip().lower()
     if not email:
         raise HTTPException(status_code=401, detail="no email claim in token")
+    if verify_email and claims.get("email_verified") is False:
+        raise HTTPException(status_code=401, detail="email is not verified")
 
     name = (claims.get("name") or "").strip()
     request.session["token"] = _mint_token(_upsert_user(email, name))
     return RedirectResponse(url=settings.frontend_url)
+
+
+@router.get("/auth/providers", summary="Which login providers are enabled")
+def providers() -> dict:
+    """Report which OIDC providers are configured, so the UI shows only those."""
+    return {"microsoft": settings.entra_configured, "google": settings.google_configured}
+
+
+@router.get("/auth/microsoft/login", summary="Start the Entra login flow")
+async def entra_login(request: Request):
+    if not settings.entra_configured:
+        raise HTTPException(status_code=503, detail="Microsoft login is not configured")
+    return await oauth.entra.authorize_redirect(request, settings.entra_redirect_uri)
+
+
+@router.get("/auth/microsoft/callback", summary="Entra OIDC redirect target")
+async def entra_callback(request: Request):
+    if not settings.entra_configured:
+        raise HTTPException(status_code=503, detail="Microsoft login is not configured")
+    try:
+        token = await oauth.entra.authorize_access_token(request)
+    except OAuthError as e:
+        logger.warning("entra callback: OAuth error: %s", e)
+        raise HTTPException(status_code=401, detail="login failed") from e
+    return _complete_login(request, token.get("userinfo") or {})
+
+
+@router.get("/auth/google/login", summary="Start the Google login flow")
+async def google_login(request: Request):
+    if not settings.google_configured:
+        raise HTTPException(status_code=503, detail="Google login is not configured")
+    return await oauth.google.authorize_redirect(request, settings.google_redirect_uri)
+
+
+@router.get("/auth/google/callback", summary="Google OIDC redirect target")
+async def google_callback(request: Request):
+    if not settings.google_configured:
+        raise HTTPException(status_code=503, detail="Google login is not configured")
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError as e:
+        logger.warning("google callback: OAuth error: %s", e)
+        raise HTTPException(status_code=401, detail="login failed") from e
+    return _complete_login(request, token.get("userinfo") or {}, verify_email=True)
 
 
 @router.get("/auth/login", summary="Log in without Entra ID (development only)")
