@@ -6,7 +6,7 @@ services:
       context: .
     image: claude-usage-server
     ports:
-      - "8000:8000"
+      - "8420:8000"
     env_file:
       - path: .env
         required: false

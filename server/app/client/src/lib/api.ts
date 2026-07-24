@@ -90,8 +90,13 @@ function buildQuery(params: Record<string, string | undefined>): string {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // `credentials: "include"` sends the session cookie so the server can
-  // identify the logged-in user across requests.
-  const res = await fetch(`${API_URL}${path}`, { credentials: "include", ...init })
+  // identify the logged-in user across requests. The ngrok header skips the
+  // free-tier browser interstitial so fetch() gets JSON, not an HTML warning.
+  const res = await fetch(`${API_URL}${path}`, {
+    credentials: "include",
+    ...init,
+    headers: { "ngrok-skip-browser-warning": "true", ...(init?.headers ?? {}) },
+  })
   if (res.status === 401) {
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
     throw new UnauthorizedError()
