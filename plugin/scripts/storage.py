@@ -26,8 +26,26 @@ CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 """
 
 
+# Exponential backoff between retries (seconds), indexed by attempt count. The
+# last value is the cap (~1 hour). After MAX_ATTEMPTS the event is dead-lettered.
+BACKOFF_SECONDS = [0, 2, 5, 15, 30, 60, 300, 900, 1800, 3600]
+MAX_ATTEMPTS = len(BACKOFF_SECONDS)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _due(attempts: int, last_attempt_at: str | None) -> bool:
+    """Whether a pending event's backoff window has elapsed."""
+    if attempts == 0 or not last_attempt_at:
+        return True
+    delay = BACKOFF_SECONDS[min(attempts, len(BACKOFF_SECONDS) - 1)]
+    try:
+        last = datetime.fromisoformat(last_attempt_at)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - last).total_seconds() >= delay
 
 
 class EventQueue:
@@ -68,20 +86,35 @@ class EventQueue:
             )
 
     def claim_pending(self, limit: int = 100) -> list[sqlite3.Row]:
-        """Return the oldest pending events awaiting sync.
+        """Return pending events that are due for a retry, oldest first.
+
+        Applies exponential backoff (events whose window hasn't elapsed are
+        skipped) and dead-letters events that have exhausted ``MAX_ATTEMPTS``
+        (marked ``failed`` so they stop retrying but remain for inspection).
 
         Args:
             limit: Maximum number of events to return.
 
         Returns:
-            Rows with ``id``, ``event_type``, and ``payload``, oldest first.
+            Due rows with ``id``, ``event_type``, and ``payload``.
         """
         with self._connect() as conn:
-            return conn.execute(
-                "SELECT id, event_type, payload FROM events "
-                "WHERE status = 'pending' ORDER BY created_at LIMIT ?",
-                (limit,),
+            rows = conn.execute(
+                "SELECT id, event_type, payload, attempts, last_attempt_at FROM events "
+                "WHERE status = 'pending' ORDER BY created_at"
             ).fetchall()
+            exhausted = [r["id"] for r in rows if r["attempts"] >= MAX_ATTEMPTS]
+            if exhausted:
+                conn.executemany(
+                    "UPDATE events SET status = 'failed' WHERE id = ?",
+                    [(i,) for i in exhausted],
+                )
+            due = [
+                r
+                for r in rows
+                if r["attempts"] < MAX_ATTEMPTS and _due(r["attempts"], r["last_attempt_at"])
+            ]
+            return due[:limit]
 
     def mark_synced(self, ids: list[str]) -> None:
         """Mark events as successfully synced to the server.

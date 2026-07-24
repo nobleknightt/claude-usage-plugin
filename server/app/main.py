@@ -9,6 +9,7 @@ Run (production):
 """
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,8 +71,11 @@ app.add_middleware(
 class UsageEvent(BaseModel):
     account_email: str   = ""
     session_id:    str
+    turn_index:    int   = 0
     cwd:           str   = ""
     timestamp:     str   = ""
+    started_at:    str   = ""
+    ended_at:      str   = ""
     model:         str   = ""
     input_tokens:  int   = 0
     output_tokens: int   = 0
@@ -93,33 +97,72 @@ class EventBatch(BaseModel):
 router = APIRouter(prefix="/api")
 
 
+def _normalize_model(model: str) -> str:
+    """Strip a trailing dated suffix so `claude-opus-4-8-20260115` → `claude-opus-4-8`."""
+    return re.sub(r"-\d{8}$", "", (model or "").strip())
+
+
+def _hybrid_cost(conn, p: dict) -> tuple[float, str]:
+    """Cost for a payload: the transcript's value if non-zero, else computed.
+
+    Returns:
+        ``(cost_usd, cost_source)`` where source is ``transcript`` (authoritative
+        value from the payload), ``computed`` (tokens × model_pricing), or
+        ``unpriced`` (model not in the pricing table → cost 0).
+    """
+    reported = float(p.get("cost_usd") or 0)
+    if reported > 0:
+        return round(reported, 6), "transcript"
+
+    row = conn.execute(
+        "SELECT input_per_mtok, output_per_mtok, cache_write_per_mtok, cache_read_per_mtok "
+        "FROM model_pricing WHERE model = ?",
+        (_normalize_model(p.get("model", "")),),
+    ).fetchone()
+    if not row:
+        return 0.0, "unpriced"
+    cost = (
+        p.get("input_tokens", 0) * row["input_per_mtok"]
+        + p.get("output_tokens", 0) * row["output_per_mtok"]
+        + p.get("cache_read", 0) * row["cache_read_per_mtok"]
+        + p.get("cache_write", 0) * row["cache_write_per_mtok"]
+    ) / 1_000_000
+    return round(cost, 6), "computed"
+
+
 def _insert_usage(conn, email: str, p: dict) -> None:
-    """Write one usage row from a hook payload.
+    """Write one usage row from a hook payload (cost resolved via hybrid rules).
 
     Args:
         conn: An open database connection.
         email: The owning user's email, resolved from the API key.
         p: The event payload with token counts, model, cost, and session info.
     """
+    cost_usd, cost_source = _hybrid_cost(conn, p)
     conn.execute(
         """
         INSERT INTO usage
-            (email, account_email, session_id, cwd, timestamp, model,
-             input_tokens, output_tokens, cache_read, cache_write, cost_usd)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (email, account_email, session_id, turn_index, cwd, timestamp,
+             started_at, ended_at, model,
+             input_tokens, output_tokens, cache_read, cache_write, cost_usd, cost_source)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             email,
             p.get("account_email", ""),
             p.get("session_id", ""),
+            p.get("turn_index", 0),
             p.get("cwd", ""),
             p.get("timestamp") or now(),
+            p.get("started_at", ""),
+            p.get("ended_at", ""),
             p.get("model", ""),
             p.get("input_tokens", 0),
             p.get("output_tokens", 0),
             p.get("cache_read", 0),
             p.get("cache_write", 0),
-            p.get("cost_usd", 0.0),
+            cost_usd,
+            cost_source,
         ),
     )
 
@@ -232,11 +275,9 @@ def summary(
         params += vis_params
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     with get_db() as conn:
-        # Each row holds the session's cumulative totals as of that turn
-        # (same as cost_usd), not a per-turn delta — so per-session totals
-        # must be MAX(...), never SUM(...), or multi-turn sessions get
-        # counted once per turn instead of once. Collapse to one row per
-        # session first, then SUM those session totals per user.
+        # Each row is one turn's delta, so per-session totals are SUM(...) over
+        # turns. Collapse to one row per session first (to count sessions), then
+        # SUM those session totals per user.
         rows = conn.execute(
             f"""
             WITH session_totals AS (
@@ -244,11 +285,11 @@ def summary(
                     session_id,
                     email,
                     account_email,
-                    MAX(input_tokens)  AS input_tokens,
-                    MAX(output_tokens) AS output_tokens,
-                    MAX(cache_read)    AS cache_read,
-                    MAX(cache_write)   AS cache_write,
-                    MAX(cost_usd)      AS cost_usd,
+                    SUM(input_tokens)  AS input_tokens,
+                    SUM(output_tokens) AS output_tokens,
+                    SUM(cache_read)    AS cache_read,
+                    SUM(cache_write)   AS cache_write,
+                    SUM(cost_usd)      AS cost_usd,
                     MAX(timestamp)     AS last_seen
                 FROM usage
                 {where}
@@ -320,11 +361,14 @@ def sessions(
                 MIN(timestamp)              AS started_at,
                 MAX(timestamp)              AS last_turn_at,
                 COUNT(*)                    AS turns,
-                MAX(input_tokens)           AS input_tokens,
-                MAX(output_tokens)          AS output_tokens,
-                MAX(cache_read)             AS cache_read,
-                MAX(cache_write)            AS cache_write,
-                ROUND(MAX(cost_usd), 6)    AS cost_usd
+                SUM(input_tokens)           AS input_tokens,
+                SUM(output_tokens)          AS output_tokens,
+                SUM(cache_read)             AS cache_read,
+                SUM(cache_write)            AS cache_write,
+                ROUND(SUM(cost_usd), 6)    AS cost_usd,
+                (SELECT cost_source FROM usage u2
+                 WHERE u2.session_id = usage.session_id
+                 ORDER BY timestamp DESC LIMIT 1)  AS cost_source
             FROM usage
             {where}
             GROUP BY session_id
@@ -332,6 +376,56 @@ def sessions(
             LIMIT ?
             """,
             params + [limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.get("/sessions/{session_id}", summary="Turn-by-turn timeline for one session")
+def session_detail(
+    session_id: str,
+    user:       dict = Depends(current_user),
+) -> list[dict]:
+    """Return the ordered per-turn timeline for a single session.
+
+    The visibility scope is enforced the same way as the aggregate views: a
+    turn is only returned if the caller could already see the session it belongs
+    to (own usage, an owned account, or admin).
+
+    Args:
+        session_id: The session whose turns to return.
+        user: The logged-in dashboard user (sets the visibility scope).
+
+    Returns:
+        One dict per turn, ordered by turn index, with its tokens, cost,
+        model, and timing.
+    """
+    conditions = ["session_id = ?"]
+    params: list = [session_id]
+    vis_clause, vis_params = _visibility_filter(user, None)
+    if vis_clause:
+        conditions.append(vis_clause)
+        params += vis_params
+    where = "WHERE " + " AND ".join(conditions)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                turn_index,
+                timestamp,
+                started_at,
+                ended_at,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_write,
+                ROUND(cost_usd, 6) AS cost_usd,
+                cost_source
+            FROM usage
+            {where}
+            ORDER BY turn_index, timestamp
+            """,
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -346,8 +440,7 @@ def usage_daily(
     """Return per-day token totals for the GitHub-style activity heatmap.
 
     Intensity is input+output tokens (cache excluded so it isn't distorted).
-    Rows are cumulative snapshots, so we take the max per session per day first,
-    then sum across sessions for that day.
+    Rows are per-turn deltas, so a day's total is simply their sum.
 
     Args:
         user: The logged-in dashboard user (sets the visibility scope).
@@ -367,23 +460,77 @@ def usage_daily(
     with get_db() as conn:
         rows = conn.execute(
             f"""
-            WITH per_session_day AS (
+            SELECT
+                date(timestamp)                       AS date,
+                SUM(input_tokens) + SUM(output_tokens) AS tokens,
+                ROUND(SUM(cost_usd), 6)               AS cost_usd
+            FROM usage
+            {where}
+            GROUP BY date(timestamp)
+            ORDER BY date
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.get("/accounts", summary="Per-account reconciliation totals")
+def accounts(
+    user:      dict          = Depends(current_user),
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date:   Optional[str] = Query(None, alias="to"),
+) -> list[dict]:
+    """Reconcile usage by Claude account: who is billing to which account.
+
+    Groups every session under its ``account_email`` so an admin can see, per
+    shared Claude account, how many distinct users draw on it, the combined
+    tokens/cost, and whether the account's own address is a registered user
+    (``owner_registered`` — false means nobody who could see the whole account
+    has actually logged in).
+
+    Args:
+        user: The logged-in dashboard user (sets the visibility scope).
+        from_date: Optional inclusive start date (YYYY-MM-DD).
+        to_date: Optional inclusive end date (YYYY-MM-DD).
+
+    Returns:
+        One dict per account with user count, session count, tokens, cost,
+        last-seen timestamp, and the ``owner_registered`` flag.
+    """
+    conditions, params = _date_filter_parts(from_date, to_date)
+    vis_clause, vis_params = _visibility_filter(user, None)
+    if vis_clause:
+        conditions.append(vis_clause)
+        params += vis_params
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            WITH session_totals AS (
                 SELECT
-                    date(timestamp)                        AS day,
+                    account_email,
+                    email,
                     session_id,
-                    MAX(input_tokens) + MAX(output_tokens) AS tokens,
-                    MAX(cost_usd)                          AS cost_usd
+                    SUM(input_tokens) + SUM(output_tokens) AS tokens,
+                    SUM(cost_usd)                          AS cost_usd,
+                    MAX(timestamp)                         AS last_seen
                 FROM usage
                 {where}
-                GROUP BY date(timestamp), session_id
+                GROUP BY session_id
             )
             SELECT
-                day                     AS date,
+                account_email,
+                COUNT(DISTINCT email)   AS users,
+                COUNT(*)                AS sessions,
                 SUM(tokens)             AS tokens,
-                ROUND(SUM(cost_usd), 6) AS cost_usd
-            FROM per_session_day
-            GROUP BY day
-            ORDER BY day
+                ROUND(SUM(cost_usd), 6) AS cost_usd,
+                MAX(last_seen)          AS last_seen,
+                EXISTS(
+                    SELECT 1 FROM users WHERE users.email = session_totals.account_email
+                )                       AS owner_registered
+            FROM session_totals
+            GROUP BY account_email
+            ORDER BY cost_usd DESC
             """,
             params,
         ).fetchall()

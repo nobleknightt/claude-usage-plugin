@@ -9,20 +9,24 @@ a local durable queue, and sync to the server in the background. See the
 
 | File | Role |
 |---|---|
-| `track.py` | **Stop** hook. Reads hook stdin, parses the transcript, builds a usage event, enqueues it, kicks off a drain, and exits `0`. Pure observer — never writes decision output. |
+| `track.py` | **Stop** hook. Reads hook stdin, parses the transcript's new tail, builds a per-turn usage event, enqueues it, kicks off a drain, and exits `0`. Pure observer — never writes decision output. |
 | `sync.py` | **SessionEnd** hook (and the drain step). Ships queued events to the server with `Authorization: Bearer` and backoff; removes them once the server confirms. |
-| `storage.py` | The local SQLite outbox at `$CLAUDE_PLUGIN_DATA/events.db` (`enqueue` / `claim_pending` / `mark_synced` / …). |
-| `transcript.py` | Transcript parsing + token/cost extraction. |
+| `storage.py` | The local SQLite outbox at `$CLAUDE_PLUGIN_DATA/events.db` (`enqueue` / `claim_pending` / `mark_synced` / …), with exponential backoff and dead-lettering. |
+| `transcript.py` | Incremental transcript parsing — reads only the bytes appended since the last turn and returns that turn's token/cost delta. |
+| `state.py` | Per-session parse state (byte offset, turn index, cumulative cost) at `$CLAUDE_PLUGIN_DATA/state.json`, so each turn is read once. |
 | `config.py` | Reads config (`API_KEY`, `BASE_URL`) and resolves data-dir paths. |
 | `pyproject.toml` | Lets `uv run` provision Python (stdlib only — no third-party deps). |
 
 ## How it works
 
 ```
-Stop hook → track.py: parse transcript → enqueue event → exit 0   (never waits on the network)
+Stop hook → track.py: parse the new transcript tail (one turn's delta) → enqueue → exit 0
             queued events → POST /api/events/batch  (idempotent on event_id, with backoff)
 SessionEnd → sync.py: final drain of anything still pending
 ```
+
+Each Stop hook records a single **turn** (the delta since the last one), so the
+server stores a turn-by-turn timeline rather than repeated cumulative snapshots.
 
 If the server is down, events stay `pending` in the local queue and sync on a later
 run — **zero data loss**.

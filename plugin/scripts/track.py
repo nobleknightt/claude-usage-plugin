@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import state
 import sync
 from config import Config, read_account_email
 from storage import EventQueue
@@ -52,25 +53,53 @@ def main() -> None:
 
     _configure_logging(config.log_path)
 
+    session_id = hook_data.get("session_id", "")
     transcript_path = hook_data.get("transcript_path", "")
-    usage = parse(Path(transcript_path)) if transcript_path else None
+    if not transcript_path or not session_id:
+        sys.exit(0)
 
+    # Parse only what was appended since the last turn (the delta), not the
+    # whole transcript, so each recorded event is one turn's own usage.
+    prior = state.read(config.state_path, session_id)
+    usage = parse(Path(transcript_path), prior.offset, prior.cost)
+
+    if not usage.has_activity:
+        # An empty tail (e.g. a Stop with no new model work) — advance the
+        # offset so we don't re-scan it, but record nothing.
+        state.write(
+            config.state_path,
+            session_id,
+            state.SessionState(usage.new_offset, prior.turn_index, usage.cost_cumulative),
+        )
+        sys.exit(0)
+
+    turn_index = prior.turn_index + 1
     payload = {
         "account_email": read_account_email(),
-        "session_id": hook_data.get("session_id", ""),
-        "cwd": usage.cwd if usage else "",
+        "session_id": session_id,
+        "turn_index": turn_index,
+        "cwd": usage.cwd,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model": usage.model if usage else "",
-        "input_tokens": usage.input_tokens if usage else 0,
-        "output_tokens": usage.output_tokens if usage else 0,
-        "cache_read": usage.cache_read if usage else 0,
-        "cache_write": usage.cache_write if usage else 0,
-        "cost_usd": usage.cost_usd if usage else 0.0,
+        "started_at": usage.started_at,
+        "ended_at": usage.ended_at,
+        "model": usage.model,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read": usage.cache_read,
+        "cache_write": usage.cache_write,
+        "cost_usd": usage.cost_usd,
     }
 
     try:
         queue = EventQueue(config.db_path)
         queue.enqueue(str(uuid.uuid4()), EVENT_TYPE, json.dumps(payload))
+        # Only advance the offset once the event is safely queued, so a crash
+        # before enqueue just re-reads the same tail next time (no lost turn).
+        state.write(
+            config.state_path,
+            session_id,
+            state.SessionState(usage.new_offset, turn_index, usage.cost_cumulative),
+        )
     except Exception as e:
         logger.error("main: could not enqueue event: %s", e)
         sys.exit(0)

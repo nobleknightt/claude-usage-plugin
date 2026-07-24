@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { useNavigate } from "react-router"
 
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -32,6 +33,7 @@ export function SessionsTable() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedEmail, setSelectedEmail] = useState("")
+  const navigate = useNavigate()
 
   useEffect(() => {
     fetchSessions({ limit: 500 })
@@ -81,7 +83,11 @@ export function SessionsTable() {
           </TableHeader>
           <TableBody>
             {rows.map((s) => (
-              <TableRow key={s.session_id}>
+              <TableRow
+                key={s.session_id}
+                onClick={() => navigate(`/sessions/${encodeURIComponent(s.session_id)}`)}
+                className="cursor-pointer"
+              >
                 <TableCell className="font-medium">{s.email}</TableCell>
                 <TableCell title={s.cwd} className="max-w-40 truncate">
                   {dirLabel(s.cwd)}
@@ -94,7 +100,15 @@ export function SessionsTable() {
                 <TableCell className="text-right font-mono text-muted-foreground">
                   {numberFormat.format(s.cache_read)}/{numberFormat.format(s.cache_write)}
                 </TableCell>
-                <TableCell className="text-right font-mono">{costFormat.format(s.cost_usd)}</TableCell>
+                <TableCell className="text-right font-mono">
+                  {costFormat.format(s.cost_usd)}
+                  {s.cost_source === "computed" && (
+                    <span className="ml-1 text-xs text-muted-foreground" title="Estimated from tokens × model pricing">~</span>
+                  )}
+                  {s.cost_source === "unpriced" && (
+                    <span className="ml-1 text-xs text-muted-foreground" title="Model not in pricing table">?</span>
+                  )}
+                </TableCell>
                 <TableCell className="text-muted-foreground">
                   {new Date(s.last_turn_at).toLocaleString()}
                 </TableCell>

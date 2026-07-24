@@ -48,6 +48,10 @@ class Config:
         return self.data_dir / "events.db"
 
     @property
+    def state_path(self) -> Path:
+        return self.data_dir / "state.json"
+
+    @property
     def log_path(self) -> Path:
         return self.data_dir / "logs" / "tracker.log"
 

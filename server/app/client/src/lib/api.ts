@@ -53,12 +53,37 @@ export type SessionRow = {
   cache_read: number
   cache_write: number
   cost_usd: number
+  cost_source: "transcript" | "computed" | "unpriced" | ""
+}
+
+export type TurnRow = {
+  turn_index: number
+  timestamp: string
+  started_at: string
+  ended_at: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cache_read: number
+  cache_write: number
+  cost_usd: number
+  cost_source: "transcript" | "computed" | "unpriced" | ""
 }
 
 export type DailyPoint = {
   date: string
   tokens: number
   cost_usd: number
+}
+
+export type AccountRow = {
+  account_email: string
+  users: number
+  sessions: number
+  tokens: number
+  cost_usd: number
+  last_seen: string
+  owner_registered: number
 }
 
 export type DateRange = {
@@ -163,4 +188,12 @@ export function fetchDaily(
   params: DateRange & { email?: string } = {}
 ): Promise<DailyPoint[]> {
   return request<DailyPoint[]>(`/api/usage/daily${buildQuery(params)}`)
+}
+
+export function fetchAccounts(params: DateRange = {}): Promise<AccountRow[]> {
+  return request<AccountRow[]>(`/api/accounts${buildQuery(params)}`)
+}
+
+export function fetchSessionTurns(sessionId: string): Promise<TurnRow[]> {
+  return request<TurnRow[]>(`/api/sessions/${encodeURIComponent(sessionId)}`)
 }

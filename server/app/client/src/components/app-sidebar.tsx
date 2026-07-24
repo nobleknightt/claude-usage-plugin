@@ -1,4 +1,4 @@
-import { Activity, KeyRound, LayoutDashboard, TableProperties } from "lucide-react"
+import { Activity, Building2, KeyRound, LayoutDashboard, TableProperties } from "lucide-react"
 import { NavLink, useLocation } from "react-router"
 
 import {
@@ -11,16 +11,19 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import type { Me } from "@/lib/api"
 
 const NAV = [
   { title: "Overview", to: "/", icon: LayoutDashboard },
   { title: "Sessions", to: "/sessions", icon: TableProperties },
+  { title: "Accounts", to: "/accounts", icon: Building2, adminOnly: true },
   { title: "API keys", to: "/keys", icon: KeyRound },
 ]
 
 /** Left-hand navigation between the dashboard screens. */
-export function AppSidebar() {
+export function AppSidebar({ me }: { me: Me }) {
   const { pathname } = useLocation()
+  const nav = NAV.filter((item) => !item.adminOnly || me.is_admin)
 
   return (
     <Sidebar>
@@ -36,7 +39,7 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV.map((item) => (
+              {nav.map((item) => (
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton asChild isActive={pathname === item.to} tooltip={item.title}>
                     <NavLink to={item.to}>

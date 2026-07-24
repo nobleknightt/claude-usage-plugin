@@ -14,27 +14,61 @@ from typing import Generator
 # Path to the SQLite file; override with DATABASE (e.g. a mounted volume in Docker).
 DB = os.environ.get("DATABASE", "usage.db")
 
+# Seed rates in USD per million tokens: (input, output, cache_write, cache_read).
+# Cache tiers follow Anthropic's standard multipliers (5-min write = 1.25x input,
+# read = 0.1x input). Users can override rows at runtime.
+MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
+    "claude-fable-5":    (10.0, 50.0, 12.50, 1.00),
+    "claude-opus-4-8":   (5.0, 25.0, 6.25, 0.50),
+    "claude-opus-4-7":   (5.0, 25.0, 6.25, 0.50),
+    "claude-opus-4-6":   (5.0, 25.0, 6.25, 0.50),
+    "claude-opus-4-5":   (5.0, 25.0, 6.25, 0.50),
+    "claude-opus-4-1":   (15.0, 75.0, 18.75, 1.50),
+    "claude-sonnet-5":   (3.0, 15.0, 3.75, 0.30),
+    "claude-sonnet-4-6": (3.0, 15.0, 3.75, 0.30),
+    "claude-sonnet-4-5": (3.0, 15.0, 3.75, 0.30),
+    "claude-haiku-4-5":  (1.0, 5.0, 1.25, 0.10),
+}
+
 SCHEMA = """
+-- One row per turn (the delta reported by a single Stop hook), not a
+-- cumulative snapshot — so per-session totals are SUM(...) over turns.
 CREATE TABLE IF NOT EXISTS usage (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT    NOT NULL,
     account_email TEXT    DEFAULT '',
     session_id    TEXT    NOT NULL,
+    turn_index    INTEGER DEFAULT 0,
     cwd           TEXT    DEFAULT '',
     timestamp     TEXT    NOT NULL,
+    started_at    TEXT    DEFAULT '',
+    ended_at      TEXT    DEFAULT '',
     model         TEXT    DEFAULT '',
     input_tokens  INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     cache_read    INTEGER DEFAULT 0,
     cache_write   INTEGER DEFAULT 0,
-    cost_usd      REAL    DEFAULT 0.0
+    cost_usd      REAL    DEFAULT 0.0,
+    cost_source   TEXT    DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_email     ON usage(email);
 CREATE INDEX IF NOT EXISTS idx_session   ON usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON usage(timestamp);
 
--- Who the user is. Email comes from the Entra-verified id_token; is_admin is
--- refreshed from the ADMIN_EMAILS allowlist on every login.
+-- Per-model rates (USD per million tokens) used to compute cost when the
+-- transcript's own total_cost_usd is 0. Seeded from a code default; a row can be
+-- overridden at runtime and won't be clobbered on restart.
+CREATE TABLE IF NOT EXISTS model_pricing (
+    model                TEXT PRIMARY KEY,
+    input_per_mtok       REAL NOT NULL,
+    output_per_mtok      REAL NOT NULL,
+    cache_write_per_mtok REAL NOT NULL,
+    cache_read_per_mtok  REAL NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+
+-- Who the user is. Email + display name come from the Entra-verified id_token;
+-- is_admin is a per-user flag (see scripts/set_admin.py).
 CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     email      TEXT    NOT NULL UNIQUE,
@@ -77,12 +111,30 @@ def now() -> str:
 
 
 def init_db() -> None:
-    """Create the database schema if it does not already exist."""
+    """Create the schema, migrate older DBs, and seed model pricing."""
     # `with sqlite3.connect(...)` commits but does NOT close the connection,
     # which leaks it and locks the file on Windows. Close explicitly.
     conn = sqlite3.connect(DB)
     try:
         conn.executescript(SCHEMA)
+        # Add columns introduced after the first schema (SQLite has no
+        # "ADD COLUMN IF NOT EXISTS", so check PRAGMA first).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(usage)")}
+        for col, ddl in (
+            ("cost_source", "cost_source TEXT DEFAULT ''"),
+            ("turn_index", "turn_index INTEGER DEFAULT 0"),
+            ("started_at", "started_at TEXT DEFAULT ''"),
+            ("ended_at", "ended_at TEXT DEFAULT ''"),
+        ):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE usage ADD COLUMN {ddl}")
+        # Seed pricing (INSERT OR IGNORE keeps any runtime overrides).
+        conn.executemany(
+            "INSERT OR IGNORE INTO model_pricing "
+            "(model, input_per_mtok, output_per_mtok, cache_write_per_mtok, cache_read_per_mtok, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [(m, i, o, cw, cr, now()) for m, (i, o, cw, cr) in MODEL_PRICING.items()],
+        )
         conn.commit()
     finally:
         conn.close()

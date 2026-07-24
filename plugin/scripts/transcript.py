@@ -1,4 +1,4 @@
-"""Read a Claude Code transcript (JSONL) and extract usage for a turn."""
+"""Read a Claude Code transcript (JSONL) and extract one turn's usage delta."""
 
 import json
 from dataclasses import dataclass
@@ -6,58 +6,91 @@ from pathlib import Path
 
 
 @dataclass(slots=True)
-class TranscriptUsage:
+class TurnUsage:
     cwd: str
     model: str
     input_tokens: int
     output_tokens: int
     cache_read: int
     cache_write: int
-    cost_usd: float
+    cost_usd: float          # this turn's delta (0 → server computes from tokens)
+    cost_cumulative: float   # session-cumulative cost, to carry into the next turn
+    started_at: str
+    ended_at: str
+    new_offset: int
+
+    @property
+    def has_activity(self) -> bool:
+        return bool(
+            self.input_tokens or self.output_tokens or self.cache_read or self.cache_write
+        )
 
 
-def _read_entries(path: Path) -> list[dict]:
-    """Parse a transcript file, skipping malformed or non-object lines.
+def _iter_new_entries(path: Path, start_offset: int) -> tuple[list[dict], int]:
+    """Parse only the transcript bytes appended since ``start_offset``.
+
+    The transcript is append-only, so reading from the saved offset yields just
+    the latest turn. If the file is shorter than the offset (it was truncated or
+    replaced, e.g. after a compaction), we start over from the beginning.
 
     Args:
         path: Path to the JSONL transcript file.
+        start_offset: Byte offset to resume reading from.
 
     Returns:
-        The parsed JSON objects, one per valid line; empty if unreadable.
+        A ``(entries, new_offset)`` pair — the parsed new objects and the byte
+        offset to resume from next time.
     """
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        size = path.stat().st_size
     except OSError:
-        return []
+        return [], start_offset
+
+    offset = 0 if start_offset > size else start_offset
+    try:
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            chunk = fh.read()
+            new_offset = fh.tell()
+    except OSError:
+        return [], start_offset
 
     entries: list[dict] = []
-    for raw in lines:
-        raw = raw.strip()
-        if not raw:
+    for raw in chunk.splitlines():
+        line = raw.strip()
+        if not line:
             continue
         try:
-            entry = json.loads(raw)
+            entry = json.loads(line)
         except ValueError:
             continue
         if isinstance(entry, dict):
             entries.append(entry)
-    return entries
+    return entries, new_offset
 
 
-def parse(path: Path) -> TranscriptUsage:
-    """Extract aggregated usage for a turn from a transcript file.
+def parse(path: Path, start_offset: int = 0, prev_cost: float = 0.0) -> TurnUsage:
+    """Extract the usage delta for the turn appended since ``start_offset``.
 
     Args:
         path: Path to the JSONL transcript file.
+        start_offset: Byte offset from the previous parse of this session.
+        prev_cost: The session-cumulative cost recorded after the last turn, so
+            this turn's cost can be derived as the increase over it.
 
     Returns:
-        The summed token counts, model, cost, and originating cwd.
+        The token counts, model, per-turn cost delta, timing, and new byte
+        offset for the appended slice. ``total_cost_usd`` in the transcript is
+        session-cumulative, so the turn cost is ``cumulative - prev_cost``; a 0
+        delta tells the server to compute cost from tokens instead.
     """
-    entries = _read_entries(path)
+    entries, new_offset = _iter_new_entries(path, start_offset)
 
     input_tokens = output_tokens = cache_read = cache_write = 0
     model = ""
-    cost_usd = 0.0
+    cost_cumulative = prev_cost
+    cwd = ""
+    started_at = ended_at = ""
     for entry in entries:
         usage = entry.get("message", {}).get("usage") or entry.get("usage")
         if isinstance(usage, dict):
@@ -66,24 +99,25 @@ def parse(path: Path) -> TranscriptUsage:
             cache_read += usage.get("cache_read_input_tokens", 0)
             cache_write += usage.get("cache_creation_input_tokens", 0)
         model = entry.get("message", {}).get("model") or entry.get("model") or model
-        cost_usd = entry.get("total_cost_usd") or cost_usd
+        if entry.get("total_cost_usd") is not None:
+            cost_cumulative = float(entry["total_cost_usd"])
+        if not cwd and entry.get("cwd"):
+            cwd = entry["cwd"]
+        ts = entry.get("timestamp")
+        if ts:
+            started_at = started_at or ts
+            ended_at = ts
 
-    # The first entry's cwd is the session's original directory, stable even if
-    # the session later cd's elsewhere. The UI groups by session and can derive a
-    # label from this (e.g. the basename) as needed.
-    cwd = ""
-    for entry in entries:
-        session_cwd = entry.get("cwd")
-        if session_cwd:
-            cwd = session_cwd
-            break
-
-    return TranscriptUsage(
+    return TurnUsage(
         cwd=cwd,
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read=cache_read,
         cache_write=cache_write,
-        cost_usd=float(cost_usd),
+        cost_usd=round(max(cost_cumulative - prev_cost, 0.0), 6),
+        cost_cumulative=cost_cumulative,
+        started_at=started_at,
+        ended_at=ended_at,
+        new_offset=new_offset,
     )

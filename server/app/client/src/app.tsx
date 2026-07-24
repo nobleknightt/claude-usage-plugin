@@ -10,9 +10,10 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react"
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { Outlet, Route, Routes, useLocation } from "react-router"
 
+import { AccountsTable } from "@/components/accounts-table"
 import { ActivityHeatmap } from "@/components/activity-heatmap"
 import { ApiKeys } from "@/components/api-keys"
 import { AppSidebar } from "@/components/app-sidebar"
@@ -27,6 +28,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
+import { SessionDetail } from "@/components/session-detail"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
@@ -70,6 +72,15 @@ const chartConfig: ChartConfig = {
   output_tokens: { label: "Output tokens", color: "var(--chart-2)" },
 }
 
+const trendConfig: ChartConfig = {
+  tokens: { label: "Tokens", color: "var(--chart-1)" },
+  cost_usd: { label: "Cost (USD)", color: "var(--chart-2)" },
+}
+
+function shortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+}
+
 /**
  * Auth gate: load the current user, show the login screen if unauthenticated,
  * otherwise render the routed dashboard.
@@ -107,6 +118,8 @@ function App() {
       <Route element={<Layout me={me} />}>
         <Route index element={<Overview me={me} />} />
         <Route path="sessions" element={<SessionsTable />} />
+        <Route path="sessions/:sessionId" element={<SessionDetail />} />
+        <Route path="accounts" element={<AccountsTable />} />
         <Route path="keys" element={<ApiKeys />} />
       </Route>
     </Routes>
@@ -116,13 +129,15 @@ function App() {
 const SCREEN_TITLES: Record<string, string> = {
   "/": "Overview",
   "/sessions": "Sessions",
+  "/accounts": "Accounts",
   "/keys": "API keys",
 }
 
 /** App shell: sidebar + top bar; screens render into the <Outlet />. */
 function Layout({ me }: { me: Me }) {
   const { pathname } = useLocation()
-  const title = SCREEN_TITLES[pathname] ?? "Overview"
+  const title =
+    SCREEN_TITLES[pathname] ?? (pathname.startsWith("/sessions/") ? "Sessions" : "Overview")
 
   async function handleLogout() {
     try {
@@ -135,7 +150,7 @@ function Layout({ me }: { me: Me }) {
 
   return (
     <SidebarProvider>
-      <AppSidebar />
+      <AppSidebar me={me} />
       <SidebarInset className="h-svh min-w-0 overflow-hidden">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
           <SidebarTrigger className="-ml-1" />
@@ -311,6 +326,57 @@ function Overview({ me }: { me: Me }) {
         </p>
         <ActivityHeatmap data={daily} />
       </section>
+
+      {daily.length > 0 && (
+        <section>
+          <h2 className="font-heading text-lg font-medium">Trend</h2>
+          <p className="mb-3 text-sm text-muted-foreground">Tokens and cost per day</p>
+          <ChartContainer config={trendConfig} className="aspect-auto h-64 w-full">
+            <AreaChart data={daily} margin={{ left: 12, right: 12 }}>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="date"
+                tickLine={false}
+                axisLine={false}
+                minTickGap={24}
+                tickFormatter={shortDate}
+              />
+              <YAxis
+                yAxisId="tokens"
+                tickLine={false}
+                axisLine={false}
+                width={44}
+                tickFormatter={(v: number) => compactFormat.format(v)}
+              />
+              <YAxis
+                yAxisId="cost"
+                orientation="right"
+                tickLine={false}
+                axisLine={false}
+                width={56}
+                tickFormatter={(v: number) => costFormat.format(v)}
+              />
+              <ChartTooltip content={<ChartTooltipContent labelFormatter={(v) => shortDate(String(v))} />} />
+              <Area
+                yAxisId="tokens"
+                dataKey="tokens"
+                type="monotone"
+                stroke="var(--color-tokens)"
+                fill="var(--color-tokens)"
+                fillOpacity={0.15}
+              />
+              <Area
+                yAxisId="cost"
+                dataKey="cost_usd"
+                type="monotone"
+                stroke="var(--color-cost_usd)"
+                fill="var(--color-cost_usd)"
+                fillOpacity={0.1}
+              />
+            </AreaChart>
+          </ChartContainer>
+        </section>
+      )}
 
       {isMultiUser && (
         <section>

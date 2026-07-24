@@ -138,6 +138,89 @@ class ApiTestCase(unittest.TestCase):
         # (100+50) + (200+20) = 370
         self.assertEqual(daily[0]["tokens"], 370)
 
+    def test_hybrid_cost(self) -> None:
+        alice = auth._upsert_user("alice@example.com")
+        key = self.make_key(alice)
+        hdr = {"Authorization": f"Bearer {key}"}
+        self.client.post("/api/events/batch", headers=hdr, json={"events": [
+            # transcript cost 0 → computed from tokens (1M input on opus-4-8 @ $5/MTok)
+            {"event_id": "computed", "payload": {"session_id": "c", "model": "claude-opus-4-8", "input_tokens": 1_000_000, "cost_usd": 0}},
+            # non-zero transcript cost → used as-is
+            {"event_id": "transcript", "payload": {"session_id": "t", "model": "claude-opus-4-8", "input_tokens": 999, "cost_usd": 0.42}},
+            # unknown model + no cost → unpriced (0)
+            {"event_id": "unpriced", "payload": {"session_id": "u", "model": "who-knows", "input_tokens": 5000, "cost_usd": 0}},
+        ]})
+
+        self.login(alice)
+        by_session = {s["session_id"]: s for s in self.client.get("/api/sessions").json()}
+        self.assertAlmostEqual(by_session["c"]["cost_usd"], 5.0, places=4)
+        self.assertEqual(by_session["c"]["cost_source"], "computed")
+        self.assertAlmostEqual(by_session["t"]["cost_usd"], 0.42, places=4)
+        self.assertEqual(by_session["t"]["cost_source"], "transcript")
+        self.assertEqual(by_session["u"]["cost_usd"], 0.0)
+        self.assertEqual(by_session["u"]["cost_source"], "unpriced")
+
+    def test_turns_sum_into_session_totals(self) -> None:
+        alice = auth._upsert_user("alice@example.com")
+        key = self.make_key(alice)
+        hdr = {"Authorization": f"Bearer {key}"}
+        # two turns of the same session, each a delta
+        self.client.post("/api/events/batch", headers=hdr, json={"events": [
+            {"event_id": "t1", "payload": {"session_id": "s", "turn_index": 1, "input_tokens": 100, "output_tokens": 10, "cost_usd": 0.1}},
+            {"event_id": "t2", "payload": {"session_id": "s", "turn_index": 2, "input_tokens": 50, "output_tokens": 5, "cost_usd": 0.2}},
+        ]})
+
+        self.login(alice)
+        # summary sums the deltas across turns
+        summary = self.client.get("/api/summary").json()[0]
+        self.assertEqual(summary["input_tokens"], 150)
+        self.assertEqual(summary["output_tokens"], 15)
+        self.assertAlmostEqual(summary["cost_usd"], 0.3, places=4)
+        # the session shows both turns and their summed totals
+        session = self.client.get("/api/sessions").json()[0]
+        self.assertEqual(session["turns"], 2)
+        self.assertEqual(session["input_tokens"], 150)
+        # the detail endpoint returns the ordered per-turn timeline
+        detail = self.client.get("/api/sessions/s").json()
+        self.assertEqual([t["turn_index"] for t in detail], [1, 2])
+        self.assertEqual(detail[0]["input_tokens"], 100)
+
+    def test_session_detail_respects_visibility(self) -> None:
+        alice = auth._upsert_user("alice@example.com")
+        bob = auth._upsert_user("bob@example.com")
+        key = self.make_key(bob)
+        self.client.post(
+            "/api/events/batch",
+            headers={"Authorization": f"Bearer {key}"},
+            json=self.batch("b1", "acct@x", input_tokens=10),
+        )
+        # alice (a different, non-admin user) cannot see bob's session turns
+        self.login(alice)
+        self.assertEqual(self.client.get("/api/sessions/b1").json(), [])
+
+    def test_accounts_reconciliation(self) -> None:
+        # alice and bob both bill to team@example.com; only team@ is registered.
+        auth._upsert_user("team@example.com")
+        alice = auth._upsert_user("alice@example.com")
+        bob = auth._upsert_user("bob@example.com")
+        for user, eid in ((alice, "a1"), (bob, "b1")):
+            key = self.make_key(user)
+            self.client.post(
+                "/api/events/batch",
+                headers={"Authorization": f"Bearer {key}"},
+                json=self.batch(eid, "team@example.com", input_tokens=10, output_tokens=5),
+            )
+
+        self.login(alice, is_admin=True)
+        rows = self.client.get("/api/accounts").json()
+        self.assertEqual(len(rows), 1)
+        acct = rows[0]
+        self.assertEqual(acct["account_email"], "team@example.com")
+        self.assertEqual(acct["users"], 2)
+        self.assertEqual(acct["sessions"], 2)
+        self.assertEqual(acct["tokens"], 30)  # (10+5) per session × 2
+        self.assertTrue(acct["owner_registered"])
+
     def test_identity_comes_from_the_key_not_the_payload(self) -> None:
         alice = auth._upsert_user("alice@example.com")
         key = self.make_key(alice)
