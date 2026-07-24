@@ -1,3 +1,5 @@
+name: claude-usage
+
 services:
   server:
     build:
@@ -5,12 +7,10 @@ services:
     image: claude-usage-server
     ports:
       - "8000:8000"
-    # Entra / session / admin config comes from a local .env (see .env.example).
     env_file:
       - path: .env
         required: false
     environment:
-      # Override the DB path onto the mounted volume (wins over .env).
       DATABASE: /data/usage.db
     volumes:
       - usage-data:/data

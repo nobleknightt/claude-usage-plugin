@@ -44,10 +44,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="Claude Usage Tracker",
+    title="Claude Usage",
     description="Per-user Claude Code token & cost tracking",
     version=__version__,
     lifespan=lifespan,
+    # API docs are exposed only in development; hidden in production.
+    docs_url="/docs" if settings.is_development else None,
+    redoc_url="/redoc" if settings.is_development else None,
+    openapi_url="/openapi.json" if settings.is_development else None,
 )
 
 # Signs the session cookie that carries the logged-in dashboard user.

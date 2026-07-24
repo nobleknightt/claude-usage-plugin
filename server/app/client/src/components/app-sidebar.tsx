@@ -26,7 +26,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="px-3 py-4">
         <div className="flex items-center gap-2">
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
             <Activity className="size-4" />
           </div>
           <span className="font-heading text-base font-semibold">Claude Usage</span>
