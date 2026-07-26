@@ -1,7 +1,7 @@
 [project]
 name = "server"
 version = "0.1.0"
-description = "Claude Code usage tracker — FastAPI + SQLite server and dashboard"
+description = "Tracks per-person Claude Code token usage and cost across shared accounts, with a FastAPI backend and React dashboard"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -9,4 +9,14 @@ dependencies = [
     "authlib>=1.3.2",
     "itsdangerous>=2.2.0",
     "joserfc>=1.7.4",
+    "sqlalchemy>=2.0.51",
+    "alembic>=1.18.5",
+]
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.3.4",
+]
+mysql = [
+    "pymysql>=1.2.0",
 ]

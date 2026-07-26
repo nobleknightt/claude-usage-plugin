@@ -13,7 +13,9 @@ Run from the server/ directory as a module so the `app` package resolves:
 import argparse
 from urllib.parse import quote
 
-from app.db import get_db, now
+from sqlalchemy import text
+
+from app.db import get_db, init_db, now
 
 
 def set_admin(email: str, is_admin: bool) -> None:
@@ -28,11 +30,22 @@ def set_admin(email: str, is_admin: bool) -> None:
     """
     flag = 1 if is_admin else 0
     with get_db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO users (email, is_admin, created_at) VALUES (?, ?, ?)",
-            (email, flag, now()),
-        )
-        conn.execute("UPDATE users SET is_admin = ? WHERE email = ?", (flag, email))
+        existing = conn.execute(
+            text("SELECT id FROM users WHERE email = :email"), {"email": email}
+        ).first()
+        if not existing:
+            conn.execute(
+                text(
+                    "INSERT INTO users (email, is_admin, created_at) "
+                    "VALUES (:email, :flag, :created_at)"
+                ),
+                {"email": email, "flag": flag, "created_at": now()},
+            )
+        else:
+            conn.execute(
+                text("UPDATE users SET is_admin = :flag WHERE email = :email"),
+                {"flag": flag, "email": email},
+            )
         conn.commit()
 
 
@@ -47,6 +60,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    init_db()  # ensure tables exist when run standalone (e.g. before first login)
     granted = not args.revoke
     set_admin(args.email, granted)
 

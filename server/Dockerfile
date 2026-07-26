@@ -30,16 +30,18 @@ FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    DATABASE=/data/usage.db
+    DATABASE_URL=sqlite:////data/usage.db
 
 WORKDIR /app
 
 # Install dependencies in their own cached layer, using only the lockfiles
 # (no project source yet) so code edits don't bust the dependency cache.
+# --all-extras bundles the Postgres and MySQL drivers so one image supports any
+# DATABASE_URL; the database is chosen at runtime, not baked into the build.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev --all-extras
 
 # App source, then the pre-built dashboard from the client stage.
 COPY . .
@@ -47,7 +49,7 @@ COPY --from=client-build /usr/src/client/dist ./app/client/dist
 
 # Install the project itself now that its source is present.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --all-extras
 
 # Put the venv on PATH so `fastapi` resolves without `uv run`.
 ENV PATH="/app/.venv/bin:$PATH"
@@ -58,4 +60,6 @@ VOLUME /data
 
 EXPOSE 8000
 
-CMD ["fastapi", "run", "app/main.py"]
+# Bind $PORT when the host injects one, else 8000 for local/compose. Uses
+# sh -c because exec-form CMD can't expand environment variables on its own.
+CMD ["sh", "-c", "fastapi run app/main.py --host 0.0.0.0 --port ${PORT:-8000}"]

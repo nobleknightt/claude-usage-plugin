@@ -1,8 +1,9 @@
 """Server configuration, read from environment variables.
 
-Entra (Azure AD) app-registration values and the session-cookie secret live
-here. See `.env.example` for the full list. Admin status is not configured here
-— it is a per-user flag stored on the user record (see scripts/set_admin.py).
+The database URL, OIDC (Entra / Google) app-registration values, and the
+session-cookie secret live here. See `.env.example` for the full list. Admin
+status is not configured here — it is a per-user flag stored on the user record
+(see scripts/set_admin.py).
 """
 
 import os
@@ -28,6 +29,7 @@ GOOGLE_METADATA_URL = "https://accounts.google.com/.well-known/openid-configurat
 
 @dataclass(slots=True)
 class Settings:
+    database_url: str
     entra_tenant_id: str
     entra_client_id: str
     entra_client_secret: str
@@ -103,6 +105,7 @@ def get_settings() -> Settings:
         The populated :class:`Settings` instance.
     """
     return Settings(
+        database_url=os.environ.get("DATABASE_URL", "sqlite:///usage.db").strip(),
         entra_tenant_id=os.environ.get("ENTRA_TENANT_ID", "").strip(),
         entra_client_id=os.environ.get("ENTRA_CLIENT_ID", "").strip(),
         entra_client_secret=os.environ.get("ENTRA_CLIENT_SECRET", "").strip(),

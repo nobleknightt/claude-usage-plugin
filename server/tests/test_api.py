@@ -20,12 +20,15 @@ class ApiTestCase(unittest.TestCase):
     def setUp(self) -> None:
         fd, self.db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        db.DB = self.db_path  # point all get_db()/init_db() calls at the temp file
+        # Point the engine at an isolated SQLite file for this test (forward
+        # slashes so the URL parses on Windows too).
+        db.configure(f"sqlite:///{self.db_path.replace(chr(92), '/')}")
         db.init_db()
         self.client = TestClient(main.app)
 
     def tearDown(self) -> None:
         main.app.dependency_overrides.clear()
+        db.get_engine().dispose()  # release the file handle before unlinking
         os.unlink(self.db_path)
 
     # --- helpers -----------------------------------------------------------

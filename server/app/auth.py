@@ -17,6 +17,7 @@ from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import OctKey
 from joserfc.jwt import JWTClaimsRegistry
+from sqlalchemy import text
 from starlette.responses import RedirectResponse
 
 from .db import get_db, now
@@ -78,16 +79,27 @@ def _upsert_user(email: str, name: str = "") -> dict:
         The user as a dict with ``id``, ``email``, ``name``, and ``is_admin``.
     """
     with get_db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO users (email, name, is_admin, created_at) VALUES (?, ?, 0, ?)",
-            (email, name, now()),
-        )
-        if name:
-            conn.execute("UPDATE users SET name = ? WHERE email = ?", (name, email))
+        existing = conn.execute(
+            text("SELECT id FROM users WHERE email = :email"), {"email": email}
+        ).first()
+        if not existing:
+            conn.execute(
+                text(
+                    "INSERT INTO users (email, name, is_admin, created_at) "
+                    "VALUES (:email, :name, 0, :created_at)"
+                ),
+                {"email": email, "name": name, "created_at": now()},
+            )
+        elif name:
+            conn.execute(
+                text("UPDATE users SET name = :name WHERE email = :email"),
+                {"name": name, "email": email},
+            )
         conn.commit()
         row = conn.execute(
-            "SELECT id, email, name, is_admin FROM users WHERE email = ?", (email,)
-        ).fetchone()
+            text("SELECT id, email, name, is_admin FROM users WHERE email = :email"),
+            {"email": email},
+        ).mappings().fetchone()
     return {
         "id": row["id"],
         "email": row["email"],

@@ -11,7 +11,9 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE: /data/usage.db
+      # Default to the mounted SQLite volume; set DATABASE_URL in .env to use
+      # Postgres/MySQL instead (interpolation lets .env win over this default).
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/usage.db}
     volumes:
       - usage-data:/data
     restart: unless-stopped

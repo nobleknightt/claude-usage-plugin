@@ -11,6 +11,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from .auth import current_user
 from .db import get_db, now
@@ -51,17 +52,20 @@ def require_api_key(authorization: str | None = Header(default=None)) -> dict:
 
     with get_db() as conn:
         row = conn.execute(
-            """
-            SELECT k.id AS key_id, u.id AS user_id, u.email, u.is_admin
-            FROM api_keys k JOIN users u ON u.id = k.user_id
-            WHERE k.key_hash = ? AND k.revoked_at IS NULL
-            """,
-            (hash_key(raw),),
-        ).fetchone()
+            text(
+                """
+                SELECT k.id AS key_id, u.id AS user_id, u.email, u.is_admin
+                FROM api_keys k JOIN users u ON u.id = k.user_id
+                WHERE k.key_hash = :key_hash AND k.revoked_at IS NULL
+                """
+            ),
+            {"key_hash": hash_key(raw)},
+        ).mappings().fetchone()
         if not row:
             raise HTTPException(status_code=401, detail="invalid or revoked API key")
         conn.execute(
-            "UPDATE api_keys SET last_used_at = ? WHERE id = ?", (now(), row["key_id"])
+            text("UPDATE api_keys SET last_used_at = :ts WHERE id = :id"),
+            {"ts": now(), "id": row["key_id"]},
         )
         conn.commit()
     return {"id": row["user_id"], "email": row["email"], "is_admin": bool(row["is_admin"])}
@@ -92,14 +96,23 @@ def create_key(body: CreateKeyBody, user: dict = Depends(current_user)) -> dict:
     """
     raw = secrets.token_urlsafe(32)
     prefix = raw[:8]  # non-secret display hint so the dashboard can tell keys apart
+    key_hash = hash_key(raw)
     with get_db() as conn:
-        cur = conn.execute(
-            "INSERT INTO api_keys (user_id, label, key_hash, prefix, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user["id"], body.label, hash_key(raw), prefix, now()),
+        conn.execute(
+            text(
+                "INSERT INTO api_keys (user_id, label, key_hash, prefix, created_at) "
+                "VALUES (:user_id, :label, :key_hash, :prefix, :created_at)"
+            ),
+            {"user_id": user["id"], "label": body.label, "key_hash": key_hash,
+             "prefix": prefix, "created_at": now()},
         )
+        # Read the id back by the unique hash — portable across dialects (no
+        # reliance on lastrowid, which Postgres doesn't provide).
+        key_id = conn.execute(
+            text("SELECT id FROM api_keys WHERE key_hash = :key_hash"),
+            {"key_hash": key_hash},
+        ).scalar_one()
         conn.commit()
-        key_id = cur.lastrowid
     # `key` is returned only here and never stored — the caller must save it now.
     return {"id": key_id, "label": body.label, "prefix": prefix, "key": raw}
 
@@ -117,10 +130,12 @@ def list_keys(user: dict = Depends(current_user)) -> list[dict]:
     """
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, label, prefix, created_at, last_used_at, revoked_at "
-            "FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
-            (user["id"],),
-        ).fetchall()
+            text(
+                "SELECT id, label, prefix, created_at, last_used_at, revoked_at "
+                "FROM api_keys WHERE user_id = :user_id ORDER BY created_at DESC"
+            ),
+            {"user_id": user["id"]},
+        ).mappings().fetchall()
     return [
         {
             "id": r["id"],
@@ -150,12 +165,14 @@ def revoke_key(key_id: int, user: dict = Depends(current_user)) -> dict:
             belongs to another user.
     """
     with get_db() as conn:
-        cur = conn.execute(
-            "UPDATE api_keys SET revoked_at = ? "
-            "WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
-            (now(), key_id, user["id"]),
+        result = conn.execute(
+            text(
+                "UPDATE api_keys SET revoked_at = :ts "
+                "WHERE id = :id AND user_id = :user_id AND revoked_at IS NULL"
+            ),
+            {"ts": now(), "id": key_id, "user_id": user["id"]},
         )
         conn.commit()
-        if cur.rowcount == 0:
+        if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="key not found")
     return {"ok": True}

@@ -12,9 +12,10 @@ server/
 │   ├── main.py       # routes: ingestion, usage/summary/sessions/daily, health; serves the dashboard
 │   ├── auth.py       # Microsoft Entra ID + Google OAuth (OIDC), session JWT, current_user dependency
 │   ├── keys.py       # API key create/list/revoke + Bearer validation
-│   ├── db.py         # SQLite schema + access
+│   ├── db.py         # SQLAlchemy engine + schema (SQLite/Postgres/MySQL)
 │   ├── settings.py   # environment configuration
 │   └── client/       # React (Vite + shadcn) dashboard
+├── alembic/          # database migrations
 ├── scripts/
 │   └── set_admin.py  # grant/revoke admin by email
 ├── tests/            # unittest suite
@@ -26,6 +27,33 @@ server/
 
 - [uv](https://docs.astral.sh/uv/) (Python ≥ 3.14)
 - [bun](https://bun.com/) — to build the dashboard
+
+## Database
+
+The server runs on **SQLite, PostgreSQL, or MySQL** — set `DATABASE_URL`:
+
+```
+sqlite:///usage.db                          # default
+postgresql://user:password@host/dbname      # add ?sslmode=require for hosted PG
+mysql+pymysql://user:password@host/dbname
+```
+
+The Postgres and MySQL drivers are optional extras (SQLite needs none). For local
+runs install the one you need; the Docker image bundles both, so any `DATABASE_URL`
+works there without a rebuild:
+
+```bash
+uv sync --extra postgres   # or --extra mysql
+```
+
+**Migrations** are managed by [Alembic](https://alembic.sqlalchemy.org/) and applied
+automatically on startup (`init_db()` runs `alembic upgrade head`), so a fresh
+database is created and an existing one upgraded before the server serves traffic.
+After changing the schema in `app/db.py`, generate a migration:
+
+```bash
+uv run alembic revision --autogenerate -m "describe the change"
+```
 
 ## Run (Docker)
 
@@ -96,7 +124,7 @@ aren't blocked by ngrok's free-tier interstitial.
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE` | SQLite path (default `usage.db`; compose uses `/data/usage.db`) |
+| `DATABASE_URL` | SQLAlchemy URL (default `sqlite:///usage.db`; also Postgres/MySQL — see Database below) |
 | `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` | Azure app registration (optional if using Google OAuth) |
 | `ENTRA_REDIRECT_URI` | Must match a **Web** redirect URI registered in Azure |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client (optional if using Microsoft Entra ID) |
