@@ -36,6 +36,7 @@ DATABASE_URL = get_settings().database_url
 # read = 0.1x input). Users can override rows at runtime.
 MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-fable-5":    (10.0, 50.0, 12.50, 1.00),
+    "claude-opus-5":     (5.0, 25.0, 6.25, 0.50),
     "claude-opus-4-8":   (5.0, 25.0, 6.25, 0.50),
     "claude-opus-4-7":   (5.0, 25.0, 6.25, 0.50),
     "claude-opus-4-6":   (5.0, 25.0, 6.25, 0.50),
