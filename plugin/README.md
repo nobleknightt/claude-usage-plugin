@@ -45,6 +45,8 @@ run — **zero data loss**.
   account the usage is billed against.
 - Only **metrics** are sent per turn — token counts, model, cost, session ID, and
   `cwd`. Prompts, assistant responses, and tool inputs/outputs are **never** sent.
+- On a session's **first sync** the whole transcript is split into turns and
+  backfilled, each dated by its own transcript timestamps, so history isn't lost.
 
 ## Configuration
 

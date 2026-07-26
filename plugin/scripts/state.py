@@ -26,6 +26,11 @@ def _load(path: Path) -> dict:
         return {}
 
 
+def _save(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
 def read(path: Path, session_id: str) -> SessionState:
     """Return the saved parse state for a session (defaults for a new one).
 
@@ -52,11 +57,10 @@ def write(path: Path, session_id: str, state: SessionState) -> None:
         session_id: The session whose state to update.
         state: The new state to store.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = _load(path)
     data[session_id] = {
         "offset": state.offset,
         "turn_index": state.turn_index,
         "cost": state.cost,
     }
-    path.write_text(json.dumps(data), encoding="utf-8")
+    _save(path, data)

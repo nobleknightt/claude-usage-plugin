@@ -10,7 +10,6 @@ import json
 import logging
 import logging.handlers
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,50 +57,55 @@ def main() -> None:
     if not transcript_path or not session_id:
         sys.exit(0)
 
-    # Parse only what was appended since the last turn (the delta), not the
-    # whole transcript, so each recorded event is one turn's own usage.
+    # Read only the bytes appended since the last run and split them into turns.
+    # Normally that's the single turn that just finished; on a session's first
+    # read it's the whole history, each turn dated by its own transcript time.
     prior = state.read(config.state_path, session_id)
-    usage = parse(Path(transcript_path), prior.offset, prior.cost)
+    result = parse(Path(transcript_path), prior.offset, prior.cost)
 
-    if not usage.has_activity:
-        # An empty tail (e.g. a Stop with no new model work) — advance the
-        # offset so we don't re-scan it, but record nothing.
+    if not result.turns:
+        # Nothing new with usage — advance the offset so we don't re-scan it.
         state.write(
             config.state_path,
             session_id,
-            state.SessionState(usage.new_offset, prior.turn_index, usage.cost_cumulative),
+            state.SessionState(result.new_offset, prior.turn_index, result.cost_cumulative),
         )
         sys.exit(0)
 
-    turn_index = prior.turn_index + 1
-    payload = {
-        "account_email": read_account_email(),
-        "session_id": session_id,
-        "turn_index": turn_index,
-        "cwd": usage.cwd,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "started_at": usage.started_at,
-        "ended_at": usage.ended_at,
-        "model": usage.model,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_read": usage.cache_read,
-        "cache_write": usage.cache_write,
-        "cost_usd": usage.cost_usd,
-    }
-
+    account_email = read_account_email()
+    now = datetime.now(timezone.utc).isoformat()
+    turn_index = prior.turn_index
     try:
         queue = EventQueue(config.db_path)
-        queue.enqueue(str(uuid.uuid4()), EVENT_TYPE, json.dumps(payload))
-        # Only advance the offset once the event is safely queued, so a crash
-        # before enqueue just re-reads the same tail next time (no lost turn).
+        for turn in result.turns:
+            turn_index += 1
+            payload = {
+                "account_email": account_email,
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "cwd": turn.cwd,
+                "timestamp": turn.ended_at or now,
+                "started_at": turn.started_at,
+                "ended_at": turn.ended_at,
+                "model": turn.model,
+                "input_tokens": turn.input_tokens,
+                "output_tokens": turn.output_tokens,
+                "cache_read": turn.cache_read,
+                "cache_write": turn.cache_write,
+                "cost_usd": turn.cost_usd,
+            }
+            # Stable id (session + turn) makes ingestion idempotent across
+            # retries and resyncs — the server counts each turn once.
+            queue.enqueue(f"{session_id}:{turn_index}", EVENT_TYPE, json.dumps(payload))
+        # Advance the offset only once the events are safely queued, so a crash
+        # before this just re-reads the same tail next time (no lost turns).
         state.write(
             config.state_path,
             session_id,
-            state.SessionState(usage.new_offset, turn_index, usage.cost_cumulative),
+            state.SessionState(result.new_offset, turn_index, result.cost_cumulative),
         )
     except Exception as e:
-        logger.error("main: could not enqueue event: %s", e)
+        logger.error("main: could not enqueue events: %s", e)
         sys.exit(0)
 
     # Best-effort background drain; failures just leave events pending.

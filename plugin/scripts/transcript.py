@@ -1,23 +1,27 @@
-"""Read a Claude Code transcript (JSONL) and extract one turn's usage delta."""
+"""Read a Claude Code transcript (JSONL) and split new content into turns.
+
+The transcript is append-only, so we read only the bytes appended since the last
+run and split them on real user prompts. Normally that yields a single turn (the
+one that just finished); on the first read of a session it yields every turn in
+its history, each dated by its own transcript timestamps.
+"""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
 @dataclass(slots=True)
-class TurnUsage:
-    cwd: str
-    model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read: int
-    cache_write: int
-    cost_usd: float          # this turn's delta (0 → server computes from tokens)
-    cost_cumulative: float   # session-cumulative cost, to carry into the next turn
-    started_at: str
-    ended_at: str
-    new_offset: int
+class Turn:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    model: str = ""
+    cwd: str = ""
+    cost_usd: float = 0.0          # this turn's cost delta (0 → server computes)
+    started_at: str = ""
+    ended_at: str = ""
 
     @property
     def has_activity(self) -> bool:
@@ -26,12 +30,18 @@ class TurnUsage:
         )
 
 
+@dataclass(slots=True)
+class ParseResult:
+    turns: list = field(default_factory=list)
+    new_offset: int = 0
+    cost_cumulative: float = 0.0   # session-cumulative cost after the last turn
+
+
 def _iter_new_entries(path: Path, start_offset: int) -> tuple[list[dict], int]:
     """Parse only the transcript bytes appended since ``start_offset``.
 
-    The transcript is append-only, so reading from the saved offset yields just
-    the latest turn. If the file is shorter than the offset (it was truncated or
-    replaced, e.g. after a compaction), we start over from the beginning.
+    If the file is shorter than the offset (truncated or replaced, e.g. after a
+    compaction), start over from the beginning.
 
     Args:
         path: Path to the JSONL transcript file.
@@ -69,55 +79,80 @@ def _iter_new_entries(path: Path, start_offset: int) -> tuple[list[dict], int]:
     return entries, new_offset
 
 
-def parse(path: Path, start_offset: int = 0, prev_cost: float = 0.0) -> TurnUsage:
-    """Extract the usage delta for the turn appended since ``start_offset``.
+def _is_user_prompt(entry: dict) -> bool:
+    """Whether an entry is a real user prompt (a turn boundary).
+
+    A ``type: "user"`` entry can be either a genuine prompt or a tool result fed
+    back to the model. Only genuine prompts start a turn; tool results carry a
+    ``tool_result`` content block and do not.
+    """
+    if entry.get("type") != "user":
+        return False
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return True
+    if isinstance(content, list):
+        return not any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        )
+    return False
+
+
+def parse(path: Path, start_offset: int = 0, prev_cost: float = 0.0) -> ParseResult:
+    """Split the transcript's appended bytes into per-turn usage.
 
     Args:
         path: Path to the JSONL transcript file.
         start_offset: Byte offset from the previous parse of this session.
         prev_cost: The session-cumulative cost recorded after the last turn, so
-            this turn's cost can be derived as the increase over it.
+            per-turn costs can be derived as increases over it.
 
     Returns:
-        The token counts, model, per-turn cost delta, timing, and new byte
-        offset for the appended slice. ``total_cost_usd`` in the transcript is
-        session-cumulative, so the turn cost is ``cumulative - prev_cost``; a 0
-        delta tells the server to compute cost from tokens instead.
+        A :class:`ParseResult` with the turns found (each with its own tokens,
+        cost delta, model, and timestamps), the new byte offset, and the
+        session-cumulative cost to carry into the next parse.
     """
     entries, new_offset = _iter_new_entries(path, start_offset)
 
-    input_tokens = output_tokens = cache_read = cache_write = 0
-    model = ""
+    turns: list[Turn] = []
     cost_cumulative = prev_cost
-    cwd = ""
-    started_at = ended_at = ""
+    baseline = prev_cost
+    current: Turn | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current is not None and current.has_activity:
+            current.cost_usd = round(max(cost_cumulative - baseline, 0.0), 6)
+            turns.append(current)
+        current = None
+
     for entry in entries:
-        usage = entry.get("message", {}).get("usage") or entry.get("usage")
+        ts = entry.get("timestamp") or ""
+        cwd = entry.get("cwd") or ""
+
+        if _is_user_prompt(entry) or current is None:
+            flush()
+            current = Turn(cwd=cwd, started_at=ts, ended_at=ts)
+            baseline = cost_cumulative
+
+        usage = (entry.get("message") or {}).get("usage") or entry.get("usage")
         if isinstance(usage, dict):
-            input_tokens += usage.get("input_tokens", 0)
-            output_tokens += usage.get("output_tokens", 0)
-            cache_read += usage.get("cache_read_input_tokens", 0)
-            cache_write += usage.get("cache_creation_input_tokens", 0)
-        model = entry.get("message", {}).get("model") or entry.get("model") or model
+            current.input_tokens += usage.get("input_tokens", 0)
+            current.output_tokens += usage.get("output_tokens", 0)
+            current.cache_read += usage.get("cache_read_input_tokens", 0)
+            current.cache_write += usage.get("cache_creation_input_tokens", 0)
+
+        model = (entry.get("message") or {}).get("model") or entry.get("model")
+        if model:
+            current.model = model
+        if cwd and not current.cwd:
+            current.cwd = cwd
         if entry.get("total_cost_usd") is not None:
             cost_cumulative = float(entry["total_cost_usd"])
-        if not cwd and entry.get("cwd"):
-            cwd = entry["cwd"]
-        ts = entry.get("timestamp")
         if ts:
-            started_at = started_at or ts
-            ended_at = ts
+            current.started_at = current.started_at or ts
+            current.ended_at = ts
 
-    return TurnUsage(
-        cwd=cwd,
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read=cache_read,
-        cache_write=cache_write,
-        cost_usd=round(max(cost_cumulative - prev_cost, 0.0), 6),
-        cost_cumulative=cost_cumulative,
-        started_at=started_at,
-        ended_at=ended_at,
-        new_offset=new_offset,
-    )
+    flush()
+    return ParseResult(turns=turns, new_offset=new_offset, cost_cumulative=cost_cumulative)

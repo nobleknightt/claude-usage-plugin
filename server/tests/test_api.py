@@ -138,6 +138,26 @@ class ApiTestCase(unittest.TestCase):
         # (100+50) + (200+20) = 370
         self.assertEqual(daily[0]["tokens"], 370)
 
+    def test_rows_are_dated_by_transcript_time(self) -> None:
+        alice = auth._upsert_user("alice@example.com")
+        key = self.make_key(alice)
+        hdr = {"Authorization": f"Bearer {key}"}
+        # The hook ran "today", but the turn was generated on 2026-06-15 — usage
+        # should be attributed to the transcript's `ended_at`, not the run time.
+        self.client.post("/api/events/batch", headers=hdr, json={"events": [
+            {"event_id": "e1", "payload": {
+                "session_id": "s",
+                "input_tokens": 100, "output_tokens": 20,
+                "timestamp": "2026-07-27T10:00:00+00:00",
+                "ended_at": "2026-06-15T09:00:00.123Z",  # ISO with Z + millis
+            }},
+        ]})
+
+        self.login(alice)
+        daily = self.client.get("/api/usage/daily").json()
+        self.assertEqual([d["date"] for d in daily], ["2026-06-15"])
+        self.assertEqual(daily[0]["tokens"], 120)
+
     def test_hybrid_cost(self) -> None:
         alice = auth._upsert_user("alice@example.com")
         key = self.make_key(alice)

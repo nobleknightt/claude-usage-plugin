@@ -153,7 +153,9 @@ def _insert_usage(conn, email: str, p: dict) -> None:
             p.get("session_id", ""),
             p.get("turn_index", 0),
             p.get("cwd", ""),
-            p.get("timestamp") or now(),
+            # Attribute usage to when it was generated (the transcript's own
+            # time), not when the hook happened to run.
+            p.get("ended_at") or p.get("timestamp") or now(),
             p.get("started_at", ""),
             p.get("ended_at", ""),
             p.get("model", ""),
