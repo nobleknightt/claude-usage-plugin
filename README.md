@@ -47,11 +47,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Then install from the marketplace `nobleknightt/claude-usage-plugin` — pick one:
+Then install from the marketplace `iajaydandge/claude-usage-plugin` — pick one:
 
 - **CLI (scriptable):**
   ```bash
-  claude plugin marketplace add nobleknightt/claude-usage-plugin
+  claude plugin marketplace add iajaydandge/claude-usage-plugin
   claude plugin install claude-usage@claude-usage --config API_KEY=<key> --config BASE_URL=<url>
   ```
 - **Interactive:** run `/plugin`, install `claude-usage`, enter config when prompted.

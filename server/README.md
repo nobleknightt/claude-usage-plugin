@@ -73,7 +73,7 @@ Copy just this folder with [`degit`](https://github.com/Rich-Harris/degit) (down
 repo subdirectory without git history), run via `bunx`:
 
 ```bash
-bunx degit@latest nobleknightt/claude-usage-plugin/server claude-usage-server
+bunx degit@latest iajaydandge/claude-usage-plugin/server claude-usage-server
 cd claude-usage-server
 cp .env.example .env          # set ENVIRONMENT=production, provider credentials, SESSION_SECRET
 docker compose up -d --build
